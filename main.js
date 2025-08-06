@@ -22,6 +22,11 @@ let myScore = 0;
 let theirScore = 0;
 let gameStarted = false;
 
+let preparingShot = false;
+let shootingJumpStart = null;
+let shootingJumpDuration = 0;
+let shootParams = null;
+
 socket.addEventListener("open", () => {
   console.log("Connected to server!");
 });
@@ -137,10 +142,11 @@ function playAnimation(name, lock = false) {
   currentAction.reset().fadeIn(0.2).play();
 
   if (lock) {
+    console.log("animations locked")
     animationLocked = true;
 
     // Wait for animation to finish, then unlock
-    const duration = currentAction.getClip().duration * 1000;
+    const duration = currentAction.getClip().duration * 0.5 * 1000;
     console.log(`🔒 Animation locked for ${duration.toFixed(0)}ms`);
 
     setTimeout(() => {
@@ -317,6 +323,8 @@ const direction = new THREE.Vector3();
 let yaw = 0, pitch = 0;
 
 document.addEventListener('keydown', (e) => {
+  if (animationLocked) return;
+  
   if (e.code === 'KeyW') moveForward = true;
   if (e.code === 'KeyS') moveBackward = true;
   if (e.code === 'KeyA') moveLeft = true;
@@ -363,34 +371,51 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('mousedown', (e) => {
   if (holdingBall && e.button === 0) {
-  console.log("🏀 Shooting triggered");
+    console.log("🏀 Shooting triggered");
 
-  const hoopPos = myRole === "player1"
-    ? new THREE.Vector3(0, 2.6, 6.6)
-    : new THREE.Vector3(0, 2.6, -6.6);
+    const hoopPos = myRole === "player1"
+      ? new THREE.Vector3(0, 2.6, 6.6)
+      : new THREE.Vector3(0, 2.6, -6.6);
 
-  const distToHoop = cameraHolder.position.distanceTo(hoopPos);
-  console.log("📏 Distance to hoop:", distToHoop);
+    const distToHoop = cameraHolder.position.distanceTo(hoopPos);
+    const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
+    const arcBoost = new THREE.Vector3(0, 1.2, 0);
+    dir.add(arcBoost).normalize();
+    const power = Math.min(0.18 + distToHoop * 0.01, 0.25);
 
-  holdingBall = false;
+    holdingBall = false;
 
-  if (distToHoop < 2) {
-    playAnimation("0", true); // Dunk with lock
-  } else {
-    console.log("🎯 Shooting!");
-    playAnimation("6", true); // Shooting
+    if (distToHoop < 4) {
+      console.log("🚀 Dunk!");
+      playAnimation("0", true); // Dunk
+    } else {
+      if (!actions["6"]) {
+        console.warn("⚠️ Shooting animation not loaded yet.");
+        return;
+      }
+
+      console.log("🎯 Preparing to shoot...");
+      preparingShot = true;
+      shootParams = { dir, power };
+
+      // ✅ Call the locking function!
+      playAnimation("6", true);
+
+      // ✅ Grab duration from the currentAction (which was just set)
+      const shootDelay = currentAction.getClip().duration * 0.65 * 1000;
+
+      shootingJumpStart = performance.now();
+      shootingJumpDuration = shootDelay;
+
+      setTimeout(() => {
+        console.log("💥 Releasing shot!");
+        ballVelocity.copy(shootParams.dir).multiplyScalar(shootParams.power);
+        preparingShot = false;
+        shootParams = null;
+        shootingJumpStart = null;
+      }, shootDelay);
+    }
   }
-
-  const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
-  const arcBoost = new THREE.Vector3(0, 1.2, 0);
-  dir.add(arcBoost).normalize();
-
-  const power = Math.min(0.18 + distToHoop * 0.01, 0.25);
-  console.log("💥 Shot direction:", dir, "Power:", power);
-
-  ballVelocity.copy(dir).multiplyScalar(power);
-  console.log("📦 New ball velocity:", ballVelocity);
-}
 });
 
 
@@ -411,43 +436,59 @@ function animate() {
 
 
   direction.set(0, 0, 0);
-  if (moveForward) direction.z -= 1;
-  if (moveBackward) direction.z += 1;
-  if (moveLeft) direction.x -= 1;
-  if (moveRight) direction.x += 1;
+
+  if (!animationLocked) { // 🔒 ignore WASD when animation is locked
+    if (moveForward) direction.z -= 1;
+    if (moveBackward) direction.z += 1;
+    if (moveLeft) direction.x -= 1;
+    if (moveRight) direction.x += 1;
+  }
+
   direction.normalize();
 
-    velocity.copy(direction).applyEuler(cameraHolder.rotation).multiplyScalar(0.1);
-    cameraHolder.position.add(velocity);
-    // Movement animation logic
-    if (!animationLocked) {
-      if (fPressed) {
-        playAnimation("2"); // Block
-        fPressed = false;
-      } else if (qPressed) {
-        playAnimation("3"); // Crossover
-        qPressed = false;
-      } else if (shiftHeld) {
-        playAnimation("4"); // Defense shuffle
-      } else if (holdingBall && (moveForward || moveBackward || moveLeft || moveRight)) {
-        playAnimation("5"); // Left Dribble
-      } else if (moveForward || moveBackward || moveLeft || moveRight) {
-        playAnimation("7"); // Right Dribble
-      } else {
-        playAnimation("1"); // Idle
-      }
-    }
-    // Clamp player within court
-    cameraHolder.position.x = Math.max(-13.9, Math.min(13.9, cameraHolder.position.x));
-    cameraHolder.position.z = Math.max(-7.4, Math.min(7.4, cameraHolder.position.z));
 
+  velocity.copy(direction).applyEuler(cameraHolder.rotation).multiplyScalar(0.1);
+  cameraHolder.position.add(velocity);
+  if (shootingJumpStart !== null) {
+    const t = performance.now() - shootingJumpStart;
+    const progress = Math.min(t / shootingJumpDuration, 1); // 0 → 1
 
-    if (holdingBall) {
-    // Hold ball in front of camera
-    const holdDistance = 0.8;
-    const localOffset = new THREE.Vector3(0, -0.3, -0.8); // in front and a bit down
-    ball.position.copy(ballHolder.localToWorld(localOffset.clone()));
+    // Simple jump arc: goes up, then down
+    const jumpHeight = 0.5 * Math.sin(progress * Math.PI); // smooth arc
+    cameraHolder.position.y = 1.6 + jumpHeight;
+  } else {
+    cameraHolder.position.y = 1.6; // base standing height
+  }
+  // Movement animation logic
+  if (!animationLocked) {
+    if (fPressed) {
+      playAnimation("2"); // Block
+      fPressed = false;
+    } else if (qPressed) {
+      playAnimation("3"); // Crossover
+      qPressed = false;
+    } else if (shiftHeld) {
+      playAnimation("4"); // Defense shuffle
+    } else if (holdingBall && (moveForward || moveBackward || moveLeft || moveRight)) {
+      playAnimation("5"); // Left Dribble
+    } else if (moveForward || moveBackward || moveLeft || moveRight) {
+      playAnimation("7"); // Right Dribble
     } else {
+      playAnimation("1"); // Idle
+    }
+  }
+  // Clamp player within court
+  cameraHolder.position.x = Math.max(-13.9, Math.min(13.9, cameraHolder.position.x));
+  cameraHolder.position.z = Math.max(-7.4, Math.min(7.4, cameraHolder.position.z));
+
+
+  if (holdingBall || preparingShot) {
+    const holdOffset = preparingShot
+      ? new THREE.Vector3(0, -0.1, -0.5) // higher for shooting pose
+      : new THREE.Vector3(0, -0.3, -0.8); // normal dribble
+
+    ball.position.copy(ballHolder.localToWorld(holdOffset.clone()));
+  } else {
     // Ball physics (gravity + velocity)
     ballVelocity.y -= 0.01; // gravity
     
