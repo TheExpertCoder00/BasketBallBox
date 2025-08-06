@@ -2,14 +2,17 @@ import * as THREE from '../build/three.module.js';
 import { GLTFLoader } from './GLTFLoader.js';
 
 const clock = new THREE.Clock();
-const actions = {}; // Store animation actions
-const animationNames = []; // <-- add this
-let currentAnimIndex = 0;   // <-- add this
+const actions = {}; 
+const animationNames = [];
+let currentAnimIndex = 0; 
 let avatar, mixer;
 
 let isRemotePlayerReady = false;
 let isLocalPlayerReady = true; // assume this tab is ready
 
+let shiftHeld = false;
+let qPressed = false;
+let fPressed = false;
 
 let myRole = null;
 
@@ -114,13 +117,40 @@ remotePlayer.position.set(0, 0, 0);
 scene.add(remotePlayer);
 
 const loader = new GLTFLoader();
+let currentAction = null; 
+let animationLocked = false;
 
-function playAnimation(name) {
-  if (!actions[name]) return;
-  // Stop all current animations first
-  Object.values(actions).forEach((a) => a.stop());
-  actions[name].reset().fadeIn(0.2).play();
+
+function playAnimation(name, lock = false) {
+  if (!actions[name]) {
+    console.warn("⚠️ Animation not found:", name);
+    return;
+  }
+
+  if (currentAction === actions[name]) return;
+
+  console.log("▶️ Switching to animation:", name);
+
+  if (currentAction) currentAction.stop();
+
+  currentAction = actions[name];
+  currentAction.reset().fadeIn(0.2).play();
+
+  if (lock) {
+    animationLocked = true;
+
+    // Wait for animation to finish, then unlock
+    const duration = currentAction.getClip().duration * 1000;
+    console.log(`🔒 Animation locked for ${duration.toFixed(0)}ms`);
+
+    setTimeout(() => {
+      animationLocked = false;
+      console.log("🔓 Animation unlocked");
+    }, duration);
+  }
 }
+
+
 
 // Load avatar and animations from Animated.glb
 loader.load("Animated.glb", (gltf) => {
@@ -333,23 +363,45 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('mousedown', (e) => {
   if (holdingBall && e.button === 0) {
-        holdingBall = false;
-        playAnimation("shooting");
-        const hoopPos = myRole === "player1"
-            ? new THREE.Vector3(0, 2.6, 6.6)  // P1 shoots at hoop 2
-            : new THREE.Vector3(0, 2.6, -6.6); // P2 shoots at hoop 1
+  console.log("🏀 Shooting triggered");
 
-        // Aim slightly upward and in front
-        const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
+  const hoopPos = myRole === "player1"
+    ? new THREE.Vector3(0, 2.6, 6.6)
+    : new THREE.Vector3(0, 2.6, -6.6);
 
-        const arcBoost = new THREE.Vector3(0, 1.2, 0);
-        dir.add(arcBoost).normalize();
+  const distToHoop = cameraHolder.position.distanceTo(hoopPos);
+  console.log("📏 Distance to hoop:", distToHoop);
 
-        const dist = cameraHolder.position.distanceTo(hoopPos);
-        const power = Math.min(0.18 + dist * 0.01, 0.25);
+  holdingBall = false;
 
-        ballVelocity.copy(dir).multiplyScalar(power);
-    }
+  if (distToHoop < 2) {
+    playAnimation("0", true); // Dunk with lock
+  } else {
+    console.log("🎯 Shooting!");
+    playAnimation("6", true); // Shooting
+  }
+
+  const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
+  const arcBoost = new THREE.Vector3(0, 1.2, 0);
+  dir.add(arcBoost).normalize();
+
+  const power = Math.min(0.18 + distToHoop * 0.01, 0.25);
+  console.log("💥 Shot direction:", dir, "Power:", power);
+
+  ballVelocity.copy(dir).multiplyScalar(power);
+  console.log("📦 New ball velocity:", ballVelocity);
+}
+});
+
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') shiftHeld = true;
+  if (e.code === 'KeyQ') qPressed = true;
+  if (e.code === 'KeyF') fPressed = true;
+});
+
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') shiftHeld = false;
 });
 
 
@@ -367,15 +419,23 @@ function animate() {
 
     velocity.copy(direction).applyEuler(cameraHolder.rotation).multiplyScalar(0.1);
     cameraHolder.position.add(velocity);
-    if (!moveForward && !moveBackward && !moveLeft && !moveRight) {
-      playAnimation("idle");
-    } else {
-      playAnimation("running");
-    }
-
-    // Dribbling (when holding ball and moving)
-    if (holdingBall && (moveForward || moveBackward || moveLeft || moveRight)) {
-      playAnimation("dribble_left");
+    // Movement animation logic
+    if (!animationLocked) {
+      if (fPressed) {
+        playAnimation("2"); // Block
+        fPressed = false;
+      } else if (qPressed) {
+        playAnimation("3"); // Crossover
+        qPressed = false;
+      } else if (shiftHeld) {
+        playAnimation("4"); // Defense shuffle
+      } else if (holdingBall && (moveForward || moveBackward || moveLeft || moveRight)) {
+        playAnimation("5"); // Left Dribble
+      } else if (moveForward || moveBackward || moveLeft || moveRight) {
+        playAnimation("7"); // Right Dribble
+      } else {
+        playAnimation("1"); // Idle
+      }
     }
     // Clamp player within court
     cameraHolder.position.x = Math.max(-13.9, Math.min(13.9, cameraHolder.position.x));
