@@ -1,0 +1,23 @@
+body, html {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+#gameCanvas {
+  display: block;
+}
+
+#scoreboard {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 24px;
+  font-family: Arial, sans-serif;
+  color: white;
+  background: rgba(0,0,0,0.5);
+  padding: 8px 16px;
+  border-radius: 10px;
+  z-index: 1;
+}
