@@ -7,7 +7,7 @@
 ## 🎮 Features
 
 - 🧍‍♂️ First-person player controller
-- 🔥 8 motion-captured basketball animations
+- 🔥 8 basketball animations
 - 🧠 Real-time multiplayer over WebSockets
 - 🏀 Dynamic ball physics & scoring system
 - 🚧 No game engine — everything built from scratch using HTML, CSS, and JavaScript
