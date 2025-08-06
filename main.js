@@ -26,6 +26,9 @@ let preparingShot = false;
 let shootingJumpStart = null;
 let shootingJumpDuration = 0;
 let shootParams = null;
+let preparingDunk = false;
+let dunkParams = null;
+
 
 socket.addEventListener("open", () => {
   console.log("Connected to server!");
@@ -385,9 +388,34 @@ document.addEventListener('mousedown', (e) => {
 
     holdingBall = false;
 
-    if (distToHoop < 4) {
-      console.log("🚀 Dunk!");
+    if (distToHoop < 3) {
+      console.log("🚀 Preparing to dunk!");
+
+      if (!actions["0"]) {
+        console.warn("⚠️ Dunk animation not loaded.");
+        return;
+      }
+
       playAnimation("0", true); // Dunk
+
+      const dunkDelay = currentAction.getClip().duration * 0.8 * 1000;
+
+      preparingDunk = true;
+      dunkParams = {
+        dir: hoopPos.clone().sub(cameraHolder.position).normalize(),
+        power: 0.25
+      };
+
+      shootingJumpStart = performance.now();       // Use same jump arc
+      shootingJumpDuration = dunkDelay;
+
+      setTimeout(() => {
+        console.log("💥 Dunk executed!");
+        ballVelocity.copy(dunkParams.dir).multiplyScalar(dunkParams.power);
+        preparingDunk = false;
+        dunkParams = null;
+        shootingJumpStart = null;
+      }, dunkDelay);
     } else {
       if (!actions["6"]) {
         console.warn("⚠️ Shooting animation not loaded yet.");
@@ -482,10 +510,16 @@ function animate() {
   cameraHolder.position.z = Math.max(-7.4, Math.min(7.4, cameraHolder.position.z));
 
 
-  if (holdingBall || preparingShot) {
-    const holdOffset = preparingShot
-      ? new THREE.Vector3(0, -0.1, -0.5) // higher for shooting pose
-      : new THREE.Vector3(0, -0.3, -0.8); // normal dribble
+  if (holdingBall || preparingShot || preparingDunk) {
+    let holdOffset;
+
+    if (preparingShot) {
+      holdOffset = new THREE.Vector3(0, -0.1, -0.5); // Shooting pose
+    } else if (preparingDunk) {
+      holdOffset = new THREE.Vector3(0, 0.2, -0.3); // Higher pose for dunk
+    } else {
+      holdOffset = new THREE.Vector3(0, -0.3, -0.8); // Normal dribble
+    }
 
     ball.position.copy(ballHolder.localToWorld(holdOffset.clone()));
   } else {
