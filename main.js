@@ -2,10 +2,11 @@ import * as THREE from '../build/three.module.js';
 import { GLTFLoader } from './GLTFLoader.js';
 
 const clock = new THREE.Clock();
-const actions = {}; 
+const localActions = {};
+const remoteActions = {};
 const animationNames = [];
-let currentAnimIndex = 0; 
-let avatar, mixer;
+let currentAnimIndex = 0;
+let localAvatar, remoteAvatar, localMixer, remoteMixer;
 
 let isRemotePlayerReady = false;
 let isLocalPlayerReady = true; // assume this tab is ready
@@ -35,18 +36,18 @@ let dribbleStartTime = 0;
 let previousHandY = null;
 let smoothedBounce = 0.25;
 
-
 socket.addEventListener("open", () => {
   console.log("Connected to server!");
 });
 
 socket.addEventListener("message", async (event) => {
     const data = JSON.parse(event.data);
+    console.log(`📨 [${myRole || 'unassigned'}] Received message:`, data);
 
     if (data.type === "role") {
         myRole = data.role;
         socket.send(JSON.stringify({ type: "ready", role: myRole }));
-        console.log(myRole);
+        console.log(`🎮 Assigned role: ${myRole}`);
 
         // Spawn player based on role
         if (myRole === "player1") {
@@ -55,7 +56,6 @@ socket.addEventListener("message", async (event) => {
             cameraHolder.position.set(5, 1.6, -5);
         }
     }
-
 
     if (data.type === "bothReady") {
         gameStarted = true;
@@ -76,10 +76,16 @@ socket.addEventListener("message", async (event) => {
         theirScore = data.score;
         document.getElementById("theirScore").textContent = theirScore;
     }
+    if (data.type === "animation") {
+        console.log(`🎬 [${myRole}] Processing animation: ${data.animation}, lock: ${data.lock}`);
+        if (remoteActions[data.animation]) {
+            playAnimation(remoteActions, data.animation, data.lock || false);
+            console.log(`▶ [${myRole}] Playing remote animation: ${data.animation}`);
+        } else {
+            console.warn(`⚠️ [${myRole}] Remote animation not found: ${data.animation}`);
+        }
+    }
 });
-
-
-
 
 function makeNameTag(text) {
   const canvas = document.createElement("canvas");
@@ -99,7 +105,6 @@ function makeNameTag(text) {
   sprite.scale.set(2, 0.5, 1); // Adjust scale if needed
   return sprite;
 }
-
 
 let holdingBall = false;
 const ballVelocity = new THREE.Vector3(0, 0, 0);
@@ -126,73 +131,117 @@ const floor = new THREE.Mesh(
 floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
 
-const remotePlayer = new THREE.Object3D(); // placeholder for avatar
+const localPlayer = new THREE.Object3D();
+localPlayer.position.set(0, 0, 0);
+scene.add(localPlayer);
+
+const remotePlayer = new THREE.Object3D();
 remotePlayer.position.set(0, 0, 0);
 scene.add(remotePlayer);
 
 const loader = new GLTFLoader();
-let currentAction = null; 
+let localCurrentAction = null;
+let remoteCurrentAction = null;
 let animationLocked = false;
 
-
-function playAnimation(name, lock = false) {
+function playAnimation(actions, name, lock = false) {
   if (!actions[name]) {
-    console.warn("⚠️ Animation not found:", name);
+    console.warn(`⚠️ [${myRole}] Animation not found: ${name}`);
     return;
   }
 
+  const currentAction = actions === localActions ? localCurrentAction : remoteCurrentAction;
+
   if (currentAction === actions[name]) return;
 
-  console.log("▶️ Switching to animation:", name);
+  console.log(`▶️ [${myRole}] Switching to animation: ${name} (${actions === localActions ? 'local' : 'remote'})`);
 
   if (currentAction) currentAction.stop();
 
-  currentAction = actions[name];
-  currentAction.reset().fadeIn(0.2).play();
+  const newAction = actions[name];
+  newAction.reset().fadeIn(0.2).play();
 
-  if (lock) {
-    console.log("animations locked")
+  if (actions === localActions) {
+    localCurrentAction = newAction;
+    if (socket.readyState === WebSocket.OPEN) {
+      console.log(`📤 [${myRole}] Sending animation: ${name}, lock: ${lock}`);
+      socket.send(JSON.stringify({
+        type: "animation",
+        animation: name,
+        lock: lock
+      }));
+    }
+  } else {
+    remoteCurrentAction = newAction;
+  }
+
+  if (lock && actions === localActions) {
+    console.log(`🔒 [${myRole}] Animations locked`);
     animationLocked = true;
 
     // Wait for animation to finish, then unlock
-    const duration = currentAction.getClip().duration * 0.5 * 1000;
-    console.log(`🔒 Animation locked for ${duration.toFixed(0)}ms`);
+    const duration = newAction.getClip().duration * 0.5 * 1000;
+    console.log(`🔒 [${myRole}] Animation locked for ${duration.toFixed(0)}ms`);
 
     setTimeout(() => {
       animationLocked = false;
-      console.log("🔓 Animation unlocked");
+      console.log(`🔓 [${myRole}] Animation unlocked`);
     }, duration);
   }
 }
 
-
-
-// Load avatar and animations from Animated.glb
+// Load local player avatar
 loader.load("Animated.glb", (gltf) => {
-  avatar = gltf.scene;
-  avatar.scale.set(1, 1, 1);
-  avatar.position.set(0, -0.73, 0);
-  remotePlayer.add(avatar);
-  scene.add(remotePlayer);
+  localAvatar = gltf.scene;
+  localAvatar.scale.set(1, 1, 1);
+  localAvatar.position.set(0, -0.73, 0);
+  localAvatar.visible = false; // Make local player invisible for first-person view
+  localPlayer.add(localAvatar);
 
-  mixer = new THREE.AnimationMixer(avatar);
+  localMixer = new THREE.AnimationMixer(localAvatar);
 
   // Store animations by index: 0 = Dunk, 1 = Idle, etc.
   gltf.animations.forEach((clip, index) => {
-    const key = index.toString(); // use "0", "1", ..., "7"
-    actions[key] = mixer.clipAction(clip);
-    animationNames.push(key);
-
+    const key = index.toString();
+    localActions[key] = localMixer.clipAction(clip);
+    if (!animationNames.includes(key)) {
+      animationNames.push(key);
+    }
     if (index === 1) { // Index 1 is Idle
-      actions[key].play();
+      localActions[key].play();
+      localCurrentAction = localActions[key];
     }
   });
+  console.log(`✅ [${myRole}] Local avatar loaded with animations:`, Object.keys(localActions));
 });
 
+// Load remote player avatar
+loader.load("Animated.glb", (gltf) => {
+  remoteAvatar = gltf.scene;
+  remoteAvatar.scale.set(1, 1, 1);
+  remoteAvatar.position.set(0, -0.73, 0);
+  remotePlayer.add(remoteAvatar);
 
+  remoteMixer = new THREE.AnimationMixer(remoteAvatar);
+
+  // Store animations for remote player
+  gltf.animations.forEach((clip, index) => {
+    const key = index.toString();
+    remoteActions[key] = remoteMixer.clipAction(clip);
+    if (index === 1) { // Start remote player with Idle animation
+      remoteActions[key].play();
+      remoteCurrentAction = remoteActions[key];
+    }
+  });
+  console.log(`✅ [${myRole}] Remote avatar loaded with animations:`, Object.keys(remoteActions));
+});
+
+const localNameTag = makeNameTag("You");
+localNameTag.position.set(0, 2.8, 0);
+localPlayer.add(localNameTag);
 
 const remoteNameTag = makeNameTag("Opponent");
-remoteNameTag.position.set(0, 2.8, 0); // above head
+remoteNameTag.position.set(0, 2.8, 0);
 remotePlayer.add(remoteNameTag);
 
 const light = new THREE.DirectionalLight(0xffffff, 1);
@@ -217,7 +266,7 @@ const backboardCollider = new THREE.Box3().setFromCenterAndSize(
 
 const rim = new THREE.Mesh(
   new THREE.TorusGeometry(0.45, 0.05, 16, 100),
-  new THREE.MeshStandardMaterial({ color: 0xff0000 }) // red rim
+  new THREE.MeshStandardMaterial({ color: 0xff0000 })
 );
 rim.position.set(0, 2.6, -6.6);
 rim.rotation.x = Math.PI / 2;
@@ -260,14 +309,12 @@ const netMaterial = new THREE.MeshStandardMaterial({
 });
 
 const net = new THREE.Mesh(netGeometry, netMaterial);
-net.position.set(0, 2.3, -6.6); // adjust for hoop 1
+net.position.set(0, 2.3, -6.6);
 scene.add(net);
 
-// duplicate for hoop 2:
 const net2 = net.clone();
-net2.position.set(0, 2.3, 6.6); // adjust for hoop 2
+net2.position.set(0, 2.3, 6.6);
 scene.add(net2);
-
 
 const pole2 = new THREE.Mesh(
   new THREE.CylinderGeometry(0.1, 0.1, 3.5),
@@ -314,9 +361,9 @@ scene.add(fenceFront);
 
 // Basketball
 const ballGeometry = new THREE.SphereGeometry(0.25, 32, 32);
-const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xff8c00 }); // orange
+const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xff8c00 });
 const ball = new THREE.Mesh(ballGeometry, ballMaterial);
-ball.position.set(0, 0.25, 0); // center court
+ball.position.set(0, 0.25, 0);
 scene.add(ball);
 
 // Pointer Lock Setup
@@ -331,7 +378,7 @@ let yaw = 0, pitch = 0;
 
 document.addEventListener('keydown', (e) => {
   if (animationLocked) return;
-  
+
   if (e.code === 'KeyW') moveForward = true;
   if (e.code === 'KeyS') moveBackward = true;
   if (e.code === 'KeyA') moveLeft = true;
@@ -348,8 +395,8 @@ document.addEventListener('keyup', (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space" && animationNames.length > 0) {
     currentAnimIndex = (currentAnimIndex + 1) % animationNames.length;
-    playAnimation(animationNames[currentAnimIndex]);
-    console.log("▶ Playing animation:", animationNames[currentAnimIndex]);
+    playAnimation(localActions, animationNames[currentAnimIndex]);
+    console.log(`▶ [${myRole}] Playing local animation: ${animationNames[currentAnimIndex]}`);
   }
 });
 
@@ -364,7 +411,6 @@ document.addEventListener('mousemove', (e) => {
   }
 });
 
-
 document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyE' && !holdingBall) {
     const dist = cameraHolder.position.distanceTo(ball.position);
@@ -375,10 +421,9 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-
 document.addEventListener('mousedown', (e) => {
   if (holdingBall && e.button === 0) {
-    console.log("🏀 Shooting triggered");
+    console.log(`🏀 [${myRole}] Shooting triggered`);
 
     const hoopPos = myRole === "player1"
       ? new THREE.Vector3(0, 2.6, 6.6)
@@ -393,16 +438,16 @@ document.addEventListener('mousedown', (e) => {
     holdingBall = false;
 
     if (distToHoop < 3) {
-      console.log("🚀 Preparing to dunk!");
+      console.log(`🚀 [${myRole}] Preparing to dunk!`);
 
-      if (!actions["0"]) {
-        console.warn("⚠️ Dunk animation not loaded.");
+      if (!localActions["0"]) {
+        console.warn(`⚠️ [${myRole}] Dunk animation not loaded.`);
         return;
       }
 
-      playAnimation("0", true); // Dunk
+      playAnimation(localActions, "0", true); // Dunk
 
-      const dunkDelay = currentAction.getClip().duration * 0.8 * 1000;
+      const dunkDelay = localCurrentAction.getClip().duration * 0.8 * 1000;
 
       preparingDunk = true;
       dunkParams = {
@@ -410,37 +455,35 @@ document.addEventListener('mousedown', (e) => {
         power: 0.25
       };
 
-      shootingJumpStart = performance.now();       // Use same jump arc
+      shootingJumpStart = performance.now();
       shootingJumpDuration = dunkDelay;
 
       setTimeout(() => {
-        console.log("💥 Dunk executed!");
+        console.log(`💥 [${myRole}] Dunk executed!`);
         ballVelocity.copy(dunkParams.dir).multiplyScalar(dunkParams.power);
         preparingDunk = false;
         dunkParams = null;
         shootingJumpStart = null;
       }, dunkDelay);
     } else {
-      if (!actions["6"]) {
-        console.warn("⚠️ Shooting animation not loaded yet.");
+      if (!localActions["6"]) {
+        console.warn(`⚠️ [${myRole}] Shooting animation not loaded yet.`);
         return;
       }
 
-      console.log("🎯 Preparing to shoot...");
+      console.log(`🎯 [${myRole}] Preparing to shoot...`);
       preparingShot = true;
       shootParams = { dir, power };
 
-      // ✅ Call the locking function!
-      playAnimation("6", true);
+      playAnimation(localActions, "6", true);
 
-      // ✅ Grab duration from the currentAction (which was just set)
-      const shootDelay = currentAction.getClip().duration * 0.65 * 1000;
+      const shootDelay = localCurrentAction.getClip().duration * 0.65 * 1000;
 
       shootingJumpStart = performance.now();
       shootingJumpDuration = shootDelay;
 
       setTimeout(() => {
-        console.log("💥 Releasing shot!");
+        console.log(`💥 [${myRole}] Releasing shot!`);
         ballVelocity.copy(shootParams.dir).multiplyScalar(shootParams.power);
         preparingShot = false;
         shootParams = null;
@@ -449,7 +492,6 @@ document.addEventListener('mousedown', (e) => {
     }
   }
 });
-
 
 document.addEventListener('keydown', (e) => {
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') shiftHeld = true;
@@ -461,16 +503,13 @@ document.addEventListener('keyup', (e) => {
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') shiftHeld = false;
 });
 
-
 // Animation Loop
 function animate() {
   requestAnimationFrame(animate);
 
-
-
   direction.set(0, 0, 0);
 
-  if (!animationLocked) { // 🔒 ignore WASD when animation is locked
+  if (!animationLocked) {
     if (moveForward) direction.z -= 1;
     if (moveBackward) direction.z += 1;
     if (moveLeft) direction.x -= 1;
@@ -479,47 +518,51 @@ function animate() {
 
   direction.normalize();
 
-
   velocity.copy(direction).applyEuler(cameraHolder.rotation).multiplyScalar(0.1);
   cameraHolder.position.add(velocity);
+  localPlayer.position.copy(cameraHolder.position);
+  localPlayer.position.y -= 0.9;
+
   if (shootingJumpStart !== null) {
     const t = performance.now() - shootingJumpStart;
-    const progress = Math.min(t / shootingJumpDuration, 1); // 0 → 1
+    const progress = Math.min(t / shootingJumpDuration, 1);
 
-    // Simple jump arc: goes up, then down
-    const jumpHeight = 0.5 * Math.sin(progress * Math.PI); // smooth arc
+    const jumpHeight = 0.5 * Math.sin(progress * Math.PI);
     cameraHolder.position.y = 1.6 + jumpHeight;
+    localPlayer.position.y = 0.7 + jumpHeight;
   } else {
-    cameraHolder.position.y = 1.6; // base standing height
+    cameraHolder.position.y = 1.6;
+    localPlayer.position.y = 0.7;
   }
-  // Movement animation logic
+
   if (!animationLocked) {
     if (fPressed) {
-      playAnimation("2"); // Block
+      playAnimation(localActions, "2"); // Block
       fPressed = false;
     } else if (qPressed) {
-      playAnimation("3"); // Crossover
+      playAnimation(localActions, "3"); // Crossover
       qPressed = false;
     } else if (shiftHeld) {
-      playAnimation("4"); // Defense shuffle
+      playAnimation(localActions, "4"); // Defense shuffle
     } else if (holdingBall && (moveForward || moveBackward || moveLeft || moveRight)) {
       if (!dribbling) {
         dribbling = true;
         dribbleStartTime = performance.now();
       }
-      playAnimation("5"); // Left Dribble
+      playAnimation(localActions, "5"); // Left Dribble
     } else if (moveForward || moveBackward || moveLeft || moveRight) {
-      playAnimation("7"); // Right Dribble
+      playAnimation(localActions, "7"); // Right Dribble
     } else {
-      playAnimation("1"); // Idle
+      playAnimation(localActions, "1"); // Idle
     }
   }
-  // Clamp player within court
+
   cameraHolder.position.x = Math.max(-13.9, Math.min(13.9, cameraHolder.position.x));
   cameraHolder.position.z = Math.max(-7.4, Math.min(7.4, cameraHolder.position.z));
+  localPlayer.position.x = cameraHolder.position.x;
+  localPlayer.position.z = cameraHolder.position.z;
 
-
-const leftHandBone = avatar?.getObjectByName("LeftHand");
+  const leftHandBone = localAvatar?.getObjectByName("LeftHand");
 
   if (preparingShot) {
     const holdOffset = new THREE.Vector3(0, -0.1, -0.5);
@@ -527,138 +570,121 @@ const leftHandBone = avatar?.getObjectByName("LeftHand");
   } else if (preparingDunk) {
     const holdOffset = new THREE.Vector3(0, 0.2, -0.3);
     ball.position.copy(ballHolder.localToWorld(holdOffset));
-  } else if (holdingBall && currentAction === actions["5"]) {
+  } else if (holdingBall && localCurrentAction === localActions["5"]) {
     if (leftHandBone) {
       const worldPos = new THREE.Vector3();
       leftHandBone.getWorldPosition(worldPos);
       const currentHandY = worldPos.y;
 
       if (previousHandY !== null) {
-        const velocityY = currentHandY - previousHandY; // positive = hand going up
+        const velocityY = currentHandY - previousHandY;
 
-        // Simulate bounce based on downward motion
         const targetBounce =
           velocityY < -0.005
-            ? 0.3 // ball is lowest when hand going down
-            : 0.8; // ball is higher when hand going up
+            ? 0.3
+            : 0.8;
 
-        // Smooth it (optional: makes the bounce less jumpy)
         smoothedBounce += (targetBounce - smoothedBounce) * 0.3;
-
         ball.position.set(worldPos.x, smoothedBounce, worldPos.z);
       }
 
       previousHandY = currentHandY;
-
     }
   } else if (holdingBall) {
     const holdOffset = new THREE.Vector3(0, -0.3, -0.8);
     ball.position.copy(ballHolder.localToWorld(holdOffset));
   } else {
-    // Ball physics (gravity + velocity)
-    ballVelocity.y -= 0.01; // gravity
-    
-    // Rim 1 collision
+    ballVelocity.y -= 0.01;
+
     const rim1Pos = new THREE.Vector3(0, 2.6, -6.6);
     if (ball.position.distanceTo(rim1Pos) < 0.5) {
-    const push = ball.position.clone().sub(rim1Pos).normalize().multiplyScalar(0.05);
-    ballVelocity.add(push);
+      const push = ball.position.clone().sub(rim1Pos).normalize().multiplyScalar(0.05);
+      ballVelocity.add(push);
     }
 
-    // Backboard 1 collision
     if (Math.abs(ball.position.x) < 0.9 && Math.abs(ball.position.y - 3) < 0.5 && Math.abs(ball.position.z + 7) < 0.1) {
-    ballVelocity.z *= -0.5;
+      ballVelocity.z *= -0.5;
     }
 
-    // Rim 2 collision
     const rim2Pos = new THREE.Vector3(0, 2.6, 6.6);
     if (ball.position.distanceTo(rim2Pos) < 0.5) {
-    const push = ball.position.clone().sub(rim2Pos).normalize().multiplyScalar(0.05);
-    ballVelocity.add(push);
+      const push = ball.position.clone().sub(rim2Pos).normalize().multiplyScalar(0.05);
+      ballVelocity.add(push);
     }
 
-    // Backboard 2 collision
     if (Math.abs(ball.position.x) < 0.9 && Math.abs(ball.position.y - 3) < 0.5 && Math.abs(ball.position.z - 7) < 0.1) {
-    ballVelocity.z *= -0.5;
+      ballVelocity.z *= -0.5;
     }
-
 
     ball.position.add(ballVelocity);
 
-    // Simple backboard bounce
     if (backboardCollider.containsPoint(ball.position)) {
-    ballVelocity.z *= -0.5;
-    ball.position.z += 0.1; // push it out slightly
+      ballVelocity.z *= -0.5;
+      ball.position.z += 0.1;
     }
 
-    // Simple backboard bounce
     if (backboardCollider2.containsPoint(ball.position)) {
-    ballVelocity.z *= -0.5;
-    ball.position.z += 0.1; // push it out slightly
+      ballVelocity.z *= -0.5;
+      ball.position.z += 0.1;
     }
-
 
     ball.position.x = Math.max(-13.9, Math.min(13.9, ball.position.x));
     ball.position.z = Math.max(-7.4, Math.min(7.4, ball.position.z));
 
-
-    // Bounce on ground
     if (ball.position.y < 0.25) {
-        ball.position.y = 0.25;
-        if (ballVelocity.y < 0) ballVelocity.y *= -0.5; // bounce
-        ballVelocity.multiplyScalar(0.8); // lose energy
-    }
-    
-
-    if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-            type: "position",
-            x: cameraHolder.position.x,
-            y: cameraHolder.position.y,
-            z: cameraHolder.position.z
-        }));
+      ball.position.y = 0.25;
+      if (ballVelocity.y < 0) ballVelocity.y *= -0.5;
+      ballVelocity.multiplyScalar(0.8);
     }
 
     if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-            type: "ball",
-            x: ball.position.x,
-            y: ball.position.y,
-            z: ball.position.z,
-            vx: ballVelocity.x,
-            vy: ballVelocity.y,
-            vz: ballVelocity.z,
-            held: holdingBall
-        }));
+      socket.send(JSON.stringify({
+        type: "position",
+        x: cameraHolder.position.x,
+        y: cameraHolder.position.y,
+        z: cameraHolder.position.z
+      }));
     }
 
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: "ball",
+        x: ball.position.x,
+        y: ball.position.y,
+        z: ball.position.z,
+        vx: ballVelocity.x,
+        vy: ballVelocity.y,
+        vz: ballVelocity.z,
+        held: holdingBall
+      }));
+    }
 
     const hoopZ = myRole === "player1" ? 6.6 : -6.6;
     const scoreZone = new THREE.Vector3(0, 2.6, hoopZ);
     const scored =
-        !holdingBall &&
-        ball.position.distanceTo(scoreZone) < 0.55 &&
-        ball.position.y < 2.8;
-
+      !holdingBall &&
+      ball.position.distanceTo(scoreZone) < 0.55 &&
+      ball.position.y < 2.8;
 
     if (!holdingBall && scored) {
-    myScore++;
-    document.getElementById("myScore").textContent = myScore;
+      myScore++;
+      document.getElementById("myScore").textContent = myScore;
 
-    // Reset ball
-    ball.position.set(0, 0.25, 0);
-    ballVelocity.set(0, 0, 0);
-    holdingBall = false;
+      ball.position.set(0, 0.25, 0);
+      ballVelocity.set(0, 0, 0);
+      holdingBall = false;
 
-    // Send score to opponent
-    socket.send(JSON.stringify({ type: "score", score: myScore }));
+      socket.send(JSON.stringify({ type: "score", score: myScore }));
     }
   }
+
   remoteNameTag.lookAt(camera.position);
+  localNameTag.lookAt(camera.position);
 
   renderer.render(scene, camera);
-  
+
   const delta = clock.getDelta();
-  if (mixer) mixer.update(delta);
+  if (localMixer) localMixer.update(delta);
+  if (remoteMixer) remoteMixer.update(delta);
 }
 animate();
