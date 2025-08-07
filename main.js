@@ -29,6 +29,12 @@ let shootParams = null;
 let preparingDunk = false;
 let dunkParams = null;
 
+let dribbling = false;
+let dribbleStartTime = 0;
+
+let previousHandY = null;
+let smoothedBounce = 0.25;
+
 
 socket.addEventListener("open", () => {
   console.log("Connected to server!");
@@ -306,14 +312,12 @@ const fenceFront = new THREE.Mesh(
 fenceFront.position.set(0, fenceHeight / 2, 7.5);
 scene.add(fenceFront);
 
-
 // Basketball
 const ballGeometry = new THREE.SphereGeometry(0.25, 32, 32);
 const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xff8c00 }); // orange
 const ball = new THREE.Mesh(ballGeometry, ballMaterial);
 ball.position.set(0, 0.25, 0); // center court
 scene.add(ball);
-
 
 // Pointer Lock Setup
 document.body.addEventListener('click', () => {
@@ -463,6 +467,7 @@ function animate() {
   requestAnimationFrame(animate);
 
 
+
   direction.set(0, 0, 0);
 
   if (!animationLocked) { // 🔒 ignore WASD when animation is locked
@@ -498,6 +503,10 @@ function animate() {
     } else if (shiftHeld) {
       playAnimation("4"); // Defense shuffle
     } else if (holdingBall && (moveForward || moveBackward || moveLeft || moveRight)) {
+      if (!dribbling) {
+        dribbling = true;
+        dribbleStartTime = performance.now();
+      }
       playAnimation("5"); // Left Dribble
     } else if (moveForward || moveBackward || moveLeft || moveRight) {
       playAnimation("7"); // Right Dribble
@@ -510,18 +519,41 @@ function animate() {
   cameraHolder.position.z = Math.max(-7.4, Math.min(7.4, cameraHolder.position.z));
 
 
-  if (holdingBall || preparingShot || preparingDunk) {
-    let holdOffset;
+const leftHandBone = avatar?.getObjectByName("LeftHand");
 
-    if (preparingShot) {
-      holdOffset = new THREE.Vector3(0, -0.1, -0.5); // Shooting pose
-    } else if (preparingDunk) {
-      holdOffset = new THREE.Vector3(0, 0.2, -0.3); // Higher pose for dunk
-    } else {
-      holdOffset = new THREE.Vector3(0, -0.3, -0.8); // Normal dribble
+  if (preparingShot) {
+    const holdOffset = new THREE.Vector3(0, -0.1, -0.5);
+    ball.position.copy(ballHolder.localToWorld(holdOffset));
+  } else if (preparingDunk) {
+    const holdOffset = new THREE.Vector3(0, 0.2, -0.3);
+    ball.position.copy(ballHolder.localToWorld(holdOffset));
+  } else if (holdingBall && currentAction === actions["5"]) {
+    if (leftHandBone) {
+      const worldPos = new THREE.Vector3();
+      leftHandBone.getWorldPosition(worldPos);
+      const currentHandY = worldPos.y;
+
+      if (previousHandY !== null) {
+        const velocityY = currentHandY - previousHandY; // positive = hand going up
+
+        // Simulate bounce based on downward motion
+        const targetBounce =
+          velocityY < -0.005
+            ? 0.3 // ball is lowest when hand going down
+            : 0.8; // ball is higher when hand going up
+
+        // Smooth it (optional: makes the bounce less jumpy)
+        smoothedBounce += (targetBounce - smoothedBounce) * 0.3;
+
+        ball.position.set(worldPos.x, smoothedBounce, worldPos.z);
+      }
+
+      previousHandY = currentHandY;
+
     }
-
-    ball.position.copy(ballHolder.localToWorld(holdOffset.clone()));
+  } else if (holdingBall) {
+    const holdOffset = new THREE.Vector3(0, -0.3, -0.8);
+    ball.position.copy(ballHolder.localToWorld(holdOffset));
   } else {
     // Ball physics (gravity + velocity)
     ballVelocity.y -= 0.01; // gravity
