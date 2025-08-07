@@ -24,7 +24,7 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (message) => {
     const data = JSON.parse(message.toString());
-    console.log("📨 Server got message:", data);
+    // console.log("📨 Server got message:", data);
 
     if (data.type === 'ready') {
       player.ready = true;
@@ -39,8 +39,8 @@ wss.on('connection', (ws) => {
       });
     }
 
-    // forward position/ball/score messages
-    if (['position', 'ball', 'score'].includes(data.type)) {
+    // Forward position, ball, score, and animation messages
+    if (['position', 'ball', 'score', 'animation'].includes(data.type)) {
       players.forEach(p => {
         if (p.ws !== ws && p.ws.readyState === WebSocket.OPEN) {
           p.ws.send(JSON.stringify(data));
