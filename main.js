@@ -17,8 +17,6 @@ let fPressed = false;
 
 let myRole = null;
 
-let remoteBallTarget = new THREE.Vector3();
-
 const socket = new WebSocket("wss://basketballbox.onrender.com");
 
 let myScore = 0;
@@ -39,17 +37,17 @@ let previousHandY = null;
 let smoothedBounce = 0.25;
 
 socket.addEventListener("open", () => {
-  // // console.log("Connected to server!");
+  // console.log("Connected to server!");
 });
 
 socket.addEventListener("message", async (event) => {
     const data = JSON.parse(event.data);
-    // // console.log(`📨 [${myRole || 'unassigned'}] Received message:`, data);
+    // console.log(`📨 [${myRole || 'unassigned'}] Received message:`, data);
 
     if (data.type === "role") {
         myRole = data.role;
         socket.send(JSON.stringify({ type: "ready", role: myRole }));
-        // // console.log(`🎮 Assigned role: ${myRole}`);
+        // console.log(`🎮 Assigned role: ${myRole}`);
 
         // Spawn player based on role
         if (myRole === "player1") {
@@ -62,15 +60,17 @@ socket.addEventListener("message", async (event) => {
     if (data.type === "bothReady") {
         gameStarted = true;
         document.getElementById("loadingScreen").style.display = "none";
-        // // console.log("✅ Both players ready, starting game.");
+        // console.log("✅ Both players ready, starting game.");
     }
 
     if (data.type === "position") {
-        remotePlayer.position.set(data.x, data.y - 0.9, data.z);
+        remotePlayer.position.lerp(new THREE.Vector3(data.x, data.y - 0.9, data.z), 0.5);
     }
-    if (data.type === "ball" && !holdingBall) {
-      remoteBallTarget.set(data.x, data.y, data.z);
-      ballVelocity.set(data.vx, data.vy, data.vz);
+    if (data.type === "ball") {
+        if (!holdingBall) { // only update if you're not holding it
+            ball.position.set(data.x, data.y, data.z);
+            ballVelocity.set(data.vx, data.vy, data.vz);
+        }
     }
     if (data.type === "score") {
         theirScore = data.score;
@@ -637,27 +637,24 @@ function animate() {
       ballVelocity.multiplyScalar(0.8);
     }
 
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "position",
-        x: cameraHolder.position.x,
-        y: cameraHolder.position.y,
-        z: cameraHolder.position.z
-      }));
-    }
+    socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify({
+      type: "position",
+      x: cameraHolder.position.x,
+      y: cameraHolder.position.y,
+      z: cameraHolder.position.z
+    }));
 
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "ball",
-        x: ball.position.x,
-        y: ball.position.y,
-        z: ball.position.z,
-        vx: ballVelocity.x,
-        vy: ballVelocity.y,
-        vz: ballVelocity.z,
-        held: holdingBall
-      }));
-    }
+    socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify({
+      type: "ball",
+      x: ball.position.x,
+      y: ball.position.y,
+      z: ball.position.z,
+      vx: ballVelocity.x,
+      vy: ballVelocity.y,
+      vz: ballVelocity.z,
+      held: holdingBall
+    }));
+
 
     const hoopZ = myRole === "player1" ? 6.6 : -6.6;
     const scoreZone = new THREE.Vector3(0, 2.6, hoopZ);
@@ -678,47 +675,13 @@ function animate() {
     }
   }
 
-  // --- Throttle network sends to ~20 Hz ---
-  const now = performance.now();
-  if (!window._lastSend || now - window._lastSend > 50) {
-    window._lastSend = now;
-
-    // Always send player position
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "position",
-        x: cameraHolder.position.x,
-        y: cameraHolder.position.y,
-        z: cameraHolder.position.z
-      }));
-    }
-
-    // Always send ball state — regardless of who is holding it
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "ball",
-        x: ball.position.x,
-        y: ball.position.y,
-        z: ball.position.z,
-        vx: ballVelocity.x,
-        vy: ballVelocity.y,
-        vz: ballVelocity.z
-      }));
-    }
-  }
-
-  // Smooth ball position if it's being updated by remote player
-  if (!holdingBall) {
-    ball.position.lerp(remoteBallTarget, 0.25); // smooth follow
-  }
-
   remoteNameTag.lookAt(camera.position);
   localNameTag.lookAt(camera.position);
 
   renderer.render(scene, camera);
+
   const delta = clock.getDelta();
   if (localMixer) localMixer.update(delta);
   if (remoteMixer) remoteMixer.update(delta);
 }
 animate();
-
