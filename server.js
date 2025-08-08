@@ -1,7 +1,22 @@
+const http = require('http');
 const WebSocket = require('ws');
-const PORT = process.env.PORT || 8080;
-const server = require('http').createServer();
+
+// Create a basic HTTP server
+const server = http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("BasketballBox WebSocket Server is live.");
+});
+
+// Create WebSocket server using that HTTP server
 const wss = new WebSocket.Server({ server });
+
+// Your existing WebSocket logic stays the same...
+
+// Start listening on Render's dynamic port
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
 
 server.listen(PORT, () => {
   console.log(`✅ WebSocket server running on ws://localhost:${PORT}`);
@@ -61,4 +76,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-// console.log("✅ WebSocket server running on ws://localhost:8080");
+console.log("✅ WebSocket server running on ws://localhost:8080");
