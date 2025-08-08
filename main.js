@@ -19,6 +19,7 @@ let myRole = null;
 
 const socket = new WebSocket("wss://basketballbox.onrender.com");
 
+
 let myScore = 0;
 let theirScore = 0;
 let gameStarted = false;
@@ -36,8 +37,36 @@ let dribbleStartTime = 0;
 let previousHandY = null;
 let smoothedBounce = 0.25;
 
-socket.addEventListener("open", () => {
-  // console.log("Connected to server!");
+// --- LOBBY UI SETUP ---
+const lobbyEl = document.getElementById('lobby');
+const roomListEl = document.getElementById('roomList');
+const createRoomBtn = document.getElementById('createRoomBtn');
+const newRoomNameInput = document.getElementById('newRoomName');
+
+function renderRooms(rooms) {
+  if (!rooms || rooms.length === 0) {
+    roomListEl.innerHTML = `<div style="opacity:.8">No rooms yet. Create one!</div>`;
+    return;
+  }
+  roomListEl.innerHTML = rooms.map(r => `
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-bottom:1px solid #222;">
+      <div><b>${r.name}</b> — ${r.count}/${r.max}</div>
+      <button data-room="${r.id}" style="cursor:pointer; padding:6px 10px; border-radius:8px; border:0;">Join</button>
+    </div>
+  `).join('');
+  [...roomListEl.querySelectorAll('button[data-room]')].forEach(btn => {
+    btn.onclick = () => socket.send(JSON.stringify({ type:'joinRoom', roomId: btn.dataset.room }));
+  });
+}
+
+createRoomBtn.onclick = () => {
+  const name = newRoomNameInput.value.trim() || 'My Room';
+  socket.send(JSON.stringify({ type:'createRoom', name, autoJoin:true }));
+};
+
+// Ask for room list on connect
+socket.addEventListener('open', () => {
+  socket.send(JSON.stringify({ type:'listRooms' }));
 });
 
 socket.addEventListener("message", async (event) => {
@@ -85,6 +114,24 @@ socket.addEventListener("message", async (event) => {
             console.warn(`⚠️ [${myRole}] Remote animation not found: ${data.animation}`);
         }
     }
+    if (data.type === 'rooms') {
+      renderRooms(data.rooms);
+    }
+
+    if (data.type === 'joinedRoom') {
+      myRole = data.role;
+      // set spawn based on role (same logic you use today)
+      if (myRole === "player1") {
+        cameraHolder.position.set(-5, 1.6, 5);
+      } else {
+        cameraHolder.position.set(5, 1.6, -5);
+      }
+      // Hide lobby and show "waiting for opponent" until bothReady arrives
+      lobbyEl.style.display = 'none';
+      document.getElementById("loadingScreen").style.display = "flex";
+      socket.send(JSON.stringify({ type: 'ready', role: myRole }));
+    }
+
 });
 
 function makeNameTag(text) {
