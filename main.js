@@ -19,7 +19,7 @@ let myRole = null;
 
 let remoteBallTarget = new THREE.Vector3();
 
-const socket = new WebSocket("wss://d89f63c3cbb2.ngrok-free.app");
+const socket = new WebSocket("wss://basketballbox.onrender.com");
 
 let myScore = 0;
 let theirScore = 0;
@@ -721,3 +721,4 @@ function animate() {
   if (remoteMixer) remoteMixer.update(delta);
 }
 animate();
+
