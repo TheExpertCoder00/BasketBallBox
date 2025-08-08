@@ -1,10 +1,16 @@
 const WebSocket = require('ws');
-const wss = new WebSocket.Server({ port: 8080 });
+const PORT = process.env.PORT || 8080;
+const server = require('http').createServer();
+const wss = new WebSocket.Server({ server });
+
+server.listen(PORT, () => {
+  console.log(`✅ WebSocket server running on ws://localhost:${PORT}`);
+});
 
 let players = [];
 console.log("🔥 server.js is running")
 wss.on('connection', (ws) => {
-  console.log('🔗 A player connected');
+  // console.log('🔗 A player connected');
 
   if (players.length >= 2) {
     ws.send(JSON.stringify({ type: 'full' }));
@@ -18,13 +24,13 @@ wss.on('connection', (ws) => {
   const player = { ws, id: playerId, role, ready: false };
   players.push(player);
 
-  console.log(`🎮 Assigned role: ${role}`);
+  // console.log(`🎮 Assigned role: ${role}`);
 
   ws.send(JSON.stringify({ type: 'role', role }));
 
   ws.on('message', (message) => {
     const data = JSON.parse(message.toString());
-    // console.log("📨 Server got message:", data);
+    // // console.log("📨 Server got message:", data);
 
     if (data.type === 'ready') {
       player.ready = true;
@@ -33,7 +39,7 @@ wss.on('connection', (ws) => {
 
     // Check readiness after any message
     if (players.length === 2 && players.every(p => p.ready)) {
-      console.log("✅✅ Server: Both players ready, sending 'bothReady'...");
+      // console.log("✅✅ Server: Both players ready, sending 'bothReady'...");
       players.forEach(p => {
         p.ws.send(JSON.stringify({ type: 'bothReady' }));
       });
@@ -55,4 +61,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-console.log("✅ WebSocket server running on ws://localhost:8080");
+// console.log("✅ WebSocket server running on ws://localhost:8080");
