@@ -3,31 +3,34 @@ const WebSocket = require('ws');
 
 const PORT = process.env.PORT || 8080;
 
-// Step 1: Create HTTP server
 const server = http.createServer((req, res) => {
   res.writeHead(200);
   res.end("BasketballBox WebSocket Server is live.");
 });
 
-// Step 2: Create WebSocket server attached to HTTP
 const wss = new WebSocket.Server({ server });
 
-let players = [];
+let rooms = {}; // { roomId: [player1, player2] }
+let nextRoomId = 1;
 
-console.log("🔥 server.js is starting");
+function getJoinableRoomId() {
+  for (const [roomId, players] of Object.entries(rooms)) {
+    if (players.length === 1) return roomId;
+  }
+  const newRoomId = `room${nextRoomId++}`;
+  rooms[newRoomId] = [];
+  return newRoomId;
+}
 
 wss.on('connection', (ws) => {
-  if (players.length >= 2) {
-    ws.send(JSON.stringify({ type: 'full' }));
-    ws.close();
-    return;
-  }
+  const roomId = getJoinableRoomId();
+  const room = rooms[roomId];
 
-  const playerId = players.length + 1;
+  const playerId = room.length + 1;
   const role = playerId === 1 ? 'player1' : 'player2';
+  const player = { ws, id: playerId, role, roomId, ready: false };
 
-  const player = { ws, id: playerId, role, ready: false };
-  players.push(player);
+  room.push(player);
 
   ws.send(JSON.stringify({ type: 'role', role }));
 
@@ -36,17 +39,17 @@ wss.on('connection', (ws) => {
 
     if (data.type === 'ready') {
       player.ready = true;
-      console.log(`✅ ${role} is ready`);
     }
 
-    if (players.length === 2 && players.every(p => p.ready)) {
-      players.forEach(p => {
+    const allReady = room.length === 2 && room.every(p => p.ready);
+    if (allReady) {
+      room.forEach(p => {
         p.ws.send(JSON.stringify({ type: 'bothReady' }));
       });
     }
 
     if (['position', 'ball', 'score', 'animation'].includes(data.type)) {
-      players.forEach(p => {
+      room.forEach(p => {
         if (p.ws !== ws && p.ws.readyState === WebSocket.OPEN) {
           p.ws.send(JSON.stringify(data));
         }
@@ -55,12 +58,17 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log(`❌ ${role} disconnected`);
-    players = players.filter(p => p.ws !== ws);
+    console.log(`❌ ${role} disconnected from ${roomId}`);
+    rooms[roomId] = room.filter(p => p.ws !== ws);
+
+    // If room is empty, delete it
+    if (rooms[roomId].length === 0) {
+      delete rooms[roomId];
+      console.log(`🗑️ Deleted empty room ${roomId}`);
+    }
   });
 });
 
-// Final step: listen on the dynamic port
 server.listen(PORT, () => {
-  console.log(`✅ Server is live on https://basketballbox.onrender.com (port ${PORT})`);
+  console.log(`✅ Server is live on wss://basketballbox.onrender.com (port ${PORT})`);
 });
