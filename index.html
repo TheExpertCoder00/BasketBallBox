@@ -6,6 +6,7 @@
   <title>Basketball Box</title>
   <link rel="stylesheet" href="style.css" />
 </head>
+
 <div id="loadingScreen" style="
   position: fixed;
   top: 0; left: 0;
@@ -21,11 +22,26 @@
   Waiting for opponent...
 </div>
 <body>
+    <div id="lobby" style="
+      position:fixed; inset:0; background:#0b0b0ee6; color:white; z-index:10000;
+      display:flex; align-items:center; justify-content:center; font-family:Arial;">
+      <div style="width:min(600px, 92%);">
+        <h2 style="margin:0 0 12px">🏀 BasketballBox — Join a Room</h2>
+
+        <div id="roomList" style="background:#111; border-radius:12px; padding:12px; max-height:40vh; overflow:auto; margin-bottom:12px;">
+          <!-- rooms will populate here -->
+        </div>
+
+        <div style="display:flex; gap:8px;">
+          <input id="newRoomName" placeholder="Room name" style="flex:1; padding:10px; border-radius:8px; border:0;">
+          <button id="createRoomBtn" style="padding:10px 14px; border-radius:8px; border:0; cursor:pointer;">Create & Join</button>
+        </div>
+      </div>
+    </div>
+
     <div id="scoreboard">
     You: <span id="myScore">0</span> &nbsp;&nbsp; Opponent: <span id="theirScore">0</span>
     </div>
-    <!-- <script src="https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.153.0/examples/js/loaders/GLTFLoader.min.js"></script> -->
     <script type="module" src="main.js"></script>
 </body>
 </html>
