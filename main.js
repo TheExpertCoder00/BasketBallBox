@@ -17,7 +17,9 @@ let fPressed = false;
 
 let myRole = null;
 
-const socket = new WebSocket("ws://localhost:8080");
+let remoteBallTarget = new THREE.Vector3();
+
+const socket = new WebSocket("wss://d89f63c3cbb2.ngrok-free.app");
 
 let myScore = 0;
 let theirScore = 0;
@@ -37,17 +39,17 @@ let previousHandY = null;
 let smoothedBounce = 0.25;
 
 socket.addEventListener("open", () => {
-  console.log("Connected to server!");
+  // // console.log("Connected to server!");
 });
 
 socket.addEventListener("message", async (event) => {
     const data = JSON.parse(event.data);
-    console.log(`📨 [${myRole || 'unassigned'}] Received message:`, data);
+    // // console.log(`📨 [${myRole || 'unassigned'}] Received message:`, data);
 
     if (data.type === "role") {
         myRole = data.role;
         socket.send(JSON.stringify({ type: "ready", role: myRole }));
-        console.log(`🎮 Assigned role: ${myRole}`);
+        // // console.log(`🎮 Assigned role: ${myRole}`);
 
         // Spawn player based on role
         if (myRole === "player1") {
@@ -60,27 +62,25 @@ socket.addEventListener("message", async (event) => {
     if (data.type === "bothReady") {
         gameStarted = true;
         document.getElementById("loadingScreen").style.display = "none";
-        console.log("✅ Both players ready, starting game.");
+        // // console.log("✅ Both players ready, starting game.");
     }
 
     if (data.type === "position") {
         remotePlayer.position.set(data.x, data.y - 0.9, data.z);
     }
-    if (data.type === "ball") {
-        if (!holdingBall) { // only update if you're not holding it
-            ball.position.set(data.x, data.y, data.z);
-            ballVelocity.set(data.vx, data.vy, data.vz);
-        }
+    if (data.type === "ball" && !holdingBall) {
+      remoteBallTarget.set(data.x, data.y, data.z);
+      ballVelocity.set(data.vx, data.vy, data.vz);
     }
     if (data.type === "score") {
         theirScore = data.score;
         document.getElementById("theirScore").textContent = theirScore;
     }
     if (data.type === "animation") {
-        console.log(`🎬 [${myRole}] Processing animation: ${data.animation}, lock: ${data.lock}`);
+        // console.log(`🎬 [${myRole}] Processing animation: ${data.animation}, lock: ${data.lock}`);
         if (remoteActions[data.animation]) {
             playAnimation(remoteActions, data.animation, data.lock || false);
-            console.log(`▶ [${myRole}] Playing remote animation: ${data.animation}`);
+            // console.log(`▶ [${myRole}] Playing remote animation: ${data.animation}`);
         } else {
             console.warn(`⚠️ [${myRole}] Remote animation not found: ${data.animation}`);
         }
@@ -154,7 +154,7 @@ function playAnimation(actions, name, lock = false) {
 
   if (currentAction === actions[name]) return;
 
-  console.log(`▶️ [${myRole}] Switching to animation: ${name} (${actions === localActions ? 'local' : 'remote'})`);
+  // console.log(`▶️ [${myRole}] Switching to animation: ${name} (${actions === localActions ? 'local' : 'remote'})`);
 
   if (currentAction) currentAction.stop();
 
@@ -164,7 +164,7 @@ function playAnimation(actions, name, lock = false) {
   if (actions === localActions) {
     localCurrentAction = newAction;
     if (socket.readyState === WebSocket.OPEN) {
-      console.log(`📤 [${myRole}] Sending animation: ${name}, lock: ${lock}`);
+      // console.log(`📤 [${myRole}] Sending animation: ${name}, lock: ${lock}`);
       socket.send(JSON.stringify({
         type: "animation",
         animation: name,
@@ -176,16 +176,16 @@ function playAnimation(actions, name, lock = false) {
   }
 
   if (lock && actions === localActions) {
-    console.log(`🔒 [${myRole}] Animations locked`);
+    // console.log(`🔒 [${myRole}] Animations locked`);
     animationLocked = true;
 
     // Wait for animation to finish, then unlock
     const duration = newAction.getClip().duration * 0.5 * 1000;
-    console.log(`🔒 [${myRole}] Animation locked for ${duration.toFixed(0)}ms`);
+    // console.log(`🔒 [${myRole}] Animation locked for ${duration.toFixed(0)}ms`);
 
     setTimeout(() => {
       animationLocked = false;
-      console.log(`🔓 [${myRole}] Animation unlocked`);
+      // console.log(`🔓 [${myRole}] Animation unlocked`);
     }, duration);
   }
 }
@@ -212,7 +212,7 @@ loader.load("Animated.glb", (gltf) => {
       localCurrentAction = localActions[key];
     }
   });
-  console.log(`✅ [${myRole}] Local avatar loaded with animations:`, Object.keys(localActions));
+  // console.log(`✅ [${myRole}] Local avatar loaded with animations:`, Object.keys(localActions));
 });
 
 // Load remote player avatar
@@ -233,7 +233,7 @@ loader.load("Animated.glb", (gltf) => {
       remoteCurrentAction = remoteActions[key];
     }
   });
-  console.log(`✅ [${myRole}] Remote avatar loaded with animations:`, Object.keys(remoteActions));
+  // console.log(`✅ [${myRole}] Remote avatar loaded with animations:`, Object.keys(remoteActions));
 });
 
 const localNameTag = makeNameTag("You");
@@ -396,7 +396,7 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Space" && animationNames.length > 0) {
     currentAnimIndex = (currentAnimIndex + 1) % animationNames.length;
     playAnimation(localActions, animationNames[currentAnimIndex]);
-    console.log(`▶ [${myRole}] Playing local animation: ${animationNames[currentAnimIndex]}`);
+    // console.log(`▶ [${myRole}] Playing local animation: ${animationNames[currentAnimIndex]}`);
   }
 });
 
@@ -423,7 +423,7 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('mousedown', (e) => {
   if (holdingBall && e.button === 0) {
-    console.log(`🏀 [${myRole}] Shooting triggered`);
+    // console.log(`🏀 [${myRole}] Shooting triggered`);
 
     const hoopPos = myRole === "player1"
       ? new THREE.Vector3(0, 2.6, 6.6)
@@ -438,7 +438,7 @@ document.addEventListener('mousedown', (e) => {
     holdingBall = false;
 
     if (distToHoop < 3) {
-      console.log(`🚀 [${myRole}] Preparing to dunk!`);
+      // console.log(`🚀 [${myRole}] Preparing to dunk!`);
 
       if (!localActions["0"]) {
         console.warn(`⚠️ [${myRole}] Dunk animation not loaded.`);
@@ -459,7 +459,7 @@ document.addEventListener('mousedown', (e) => {
       shootingJumpDuration = dunkDelay;
 
       setTimeout(() => {
-        console.log(`💥 [${myRole}] Dunk executed!`);
+        // console.log(`💥 [${myRole}] Dunk executed!`);
         ballVelocity.copy(dunkParams.dir).multiplyScalar(dunkParams.power);
         preparingDunk = false;
         dunkParams = null;
@@ -471,7 +471,7 @@ document.addEventListener('mousedown', (e) => {
         return;
       }
 
-      console.log(`🎯 [${myRole}] Preparing to shoot...`);
+      // console.log(`🎯 [${myRole}] Preparing to shoot...`);
       preparingShot = true;
       shootParams = { dir, power };
 
@@ -483,7 +483,7 @@ document.addEventListener('mousedown', (e) => {
       shootingJumpDuration = shootDelay;
 
       setTimeout(() => {
-        console.log(`💥 [${myRole}] Releasing shot!`);
+        // console.log(`💥 [${myRole}] Releasing shot!`);
         ballVelocity.copy(shootParams.dir).multiplyScalar(shootParams.power);
         preparingShot = false;
         shootParams = null;
@@ -678,11 +678,44 @@ function animate() {
     }
   }
 
+  // --- Throttle network sends to ~20 Hz ---
+  const now = performance.now();
+  if (!window._lastSend || now - window._lastSend > 50) {
+    window._lastSend = now;
+
+    // Always send player position
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: "position",
+        x: cameraHolder.position.x,
+        y: cameraHolder.position.y,
+        z: cameraHolder.position.z
+      }));
+    }
+
+    // Always send ball state — regardless of who is holding it
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: "ball",
+        x: ball.position.x,
+        y: ball.position.y,
+        z: ball.position.z,
+        vx: ballVelocity.x,
+        vy: ballVelocity.y,
+        vz: ballVelocity.z
+      }));
+    }
+  }
+
+  // Smooth ball position if it's being updated by remote player
+  if (!holdingBall) {
+    ball.position.lerp(remoteBallTarget, 0.25); // smooth follow
+  }
+
   remoteNameTag.lookAt(camera.position);
   localNameTag.lookAt(camera.position);
 
   renderer.render(scene, camera);
-
   const delta = clock.getDelta();
   if (localMixer) localMixer.update(delta);
   if (remoteMixer) remoteMixer.update(delta);
