@@ -158,7 +158,6 @@ wss.on('connection', (ws) => {
     if (data.type === 'pickupBall') {
       const room = rooms.get(ws._roomId);
       if (!room) return;
-      ensureRoomState(room);
       if (!room.ballOwnerRole) {
         room.ballOwnerRole = ws._role;
         room.ball.held = true;
@@ -169,7 +168,6 @@ wss.on('connection', (ws) => {
     if (data.type === 'releaseBall') {
       const room = rooms.get(ws._roomId);
       if (!room) return;
-      ensureRoomState(room);
       if (room.ballOwnerRole === ws._role) {
         room.ball.held = false; // keep owner while ball is in air
         broadcastRoom(room, { type:'ballOwner', role: ws._role, held:false });
@@ -179,12 +177,10 @@ wss.on('connection', (ws) => {
     if (data.type === 'ball') {
       const room = rooms.get(ws._roomId);
       if (!room) return;
-      ensureRoomState(room);
       if (room.ballOwnerRole === ws._role) {
         room.ball = { x:data.x, y:data.y, z:data.z, vx:data.vx, vy:data.vy, vz:data.vz, held:data.held === true };
         broadcastRoom(room, { type:'ball', ...room.ball });
       }
-      return;
     }
 
 
