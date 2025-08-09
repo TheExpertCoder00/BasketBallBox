@@ -69,6 +69,26 @@ socket.addEventListener('open', () => {
   socket.send(JSON.stringify({ type:'listRooms' }));
 });
 
+let currentBallOwner = null;
+
+socket.addEventListener('message', (e) => {
+  const data = JSON.parse(e.data);
+
+  if (data.type === 'ballOwner') {
+    currentBallOwner = data.role;              // 'player1' | 'player2' | null
+    holdingBall = (myRole === currentBallOwner && data.held === true);
+  }
+
+  if (data.type === 'ball') {
+    // Accept server state unless you're the owner (you already simulate locally)
+    if (myRole !== currentBallOwner) {
+      ball.position.set(data.x, data.y, data.z);
+      ballVelocity.set(data.vx, data.vy, data.vz);
+    }
+  }
+});
+
+
 socket.addEventListener("message", async (event) => {
     const data = JSON.parse(event.data);
     // console.log(`📨 [${myRole || 'unassigned'}] Received message:`, data);
@@ -462,15 +482,16 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyE' && !holdingBall) {
     const dist = cameraHolder.position.distanceTo(ball.position);
     if (dist < 1.5) {
-      holdingBall = true;
-      ballVelocity.set(0, 0, 0);
+      holdingBall = true;                  // optimistic
+      ballVelocity.set(0,0,0);
+      socket.send(JSON.stringify({ type:'pickupBall' }));
     }
   }
 });
 
 document.addEventListener('mousedown', (e) => {
   if (holdingBall && e.button === 0) {
-    // console.log(`🏀 [${myRole}] Shooting triggered`);
+    socket.send(JSON.stringify({ type:'releaseBall' }));
 
     const hoopPos = myRole === "player1"
       ? new THREE.Vector3(0, 2.6, 6.6)
@@ -684,23 +705,23 @@ function animate() {
       ballVelocity.multiplyScalar(0.8);
     }
 
-    socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify({
-      type: "position",
-      x: cameraHolder.position.x,
-      y: cameraHolder.position.y,
-      z: cameraHolder.position.z
-    }));
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: 'position',
+        x: cameraHolder.position.x,
+        y: cameraHolder.position.y,
+        z: cameraHolder.position.z
+      }));
 
-    socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify({
-      type: "ball",
-      x: ball.position.x,
-      y: ball.position.y,
-      z: ball.position.z,
-      vx: ballVelocity.x,
-      vy: ballVelocity.y,
-      vz: ballVelocity.z,
-      held: holdingBall
-    }));
+      if (myRole === currentBallOwner) {
+        socket.send(JSON.stringify({
+          type: 'ball',
+          x: ball.position.x, y: ball.position.y, z: ball.position.z,
+          vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
+          held: holdingBall
+        }));
+      }
+    }
 
 
     const hoopZ = myRole === "player1" ? 6.6 : -6.6;
