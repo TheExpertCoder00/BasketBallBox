@@ -11,7 +11,19 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 
 // Room model: id, name, maxPlayers (2), players: [{ws, id, role, ready}]
-const rooms = new Map();
+// In your lobby server:
+const rooms = new Map(); // already there
+
+function makeRoom(id, name) {
+  return {
+    id, name,
+    maxPlayers: 2,
+    players: [],
+    ball: { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false },
+    ballOwnerRole: null, // 'player1' | 'player2' | null
+  };
+}
+
 let nextRoomId = 1;
 
 function summarizeRooms() {
@@ -143,6 +155,35 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (data.type === 'pickupBall') {
+      const room = rooms.get(ws._roomId);
+      if (!room) return;
+      if (!room.ballOwnerRole) {
+        room.ballOwnerRole = ws._role;
+        room.ball.held = true;
+        broadcastRoom(room, { type:'ballOwner', role: ws._role, held:true });
+      }
+    }
+
+    if (data.type === 'releaseBall') {
+      const room = rooms.get(ws._roomId);
+      if (!room) return;
+      if (room.ballOwnerRole === ws._role) {
+        room.ball.held = false; // keep owner while ball is in air
+        broadcastRoom(room, { type:'ballOwner', role: ws._role, held:false });
+      }
+    }
+
+    if (data.type === 'ball') {
+      const room = rooms.get(ws._roomId);
+      if (!room) return;
+      if (room.ballOwnerRole === ws._role) {
+        room.ball = { x:data.x, y:data.y, z:data.z, vx:data.vx, vy:data.vy, vz:data.vz, held:data.held === true };
+        broadcastRoom(room, { type:'ball', ...room.ball });
+      }
+    }
+
+
     // Forward sync messages to the other player
     if (['position','ball','score','animation'].includes(data.type)) {
       broadcastRoom(room, data, ws);
@@ -151,7 +192,14 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    leaveCurrentRoom(ws);
+    const room = rooms.get(ws._roomId);
+    if (room && room.ballOwnerRole === ws._role) {
+      room.ballOwnerRole = null;
+      room.ball.held = false;
+      // optional: reset to center
+      // room.ball = { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false };
+      broadcastRoom(room, { type:'ballOwner', role:null, held:false });
+    }
   });
 });
 
