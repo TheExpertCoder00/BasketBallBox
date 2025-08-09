@@ -14,16 +14,16 @@ const wss = new WebSocket.Server({ server });
 // In your lobby server:
 const rooms = new Map(); // already there
 
-function makeRoom(id, name) {
-  return {
-    id, name,
-    maxPlayers: 2,
-    players: [],
-    ball: { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false },
-    ballOwnerRole: null, // 'player1' | 'player2' | null
-  };
+function newBall() {
+  return { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false };
 }
-
+function makeRoom(id, name) {
+  return { id, name, maxPlayers:2, players:[], ball: newBall(), ballOwnerRole: null };
+}
+function ensureRoomState(room) {
+  if (!room.ball) room.ball = newBall();
+  if (room.ballOwnerRole === undefined) room.ballOwnerRole = null;
+}
 let nextRoomId = 1;
 
 function summarizeRooms() {
@@ -124,13 +124,13 @@ wss.on('connection', (ws) => {
     if (data.type === 'createRoom') {
       const name = (data.name || `Room ${nextRoomId}`).slice(0, 40);
       const id = `room${nextRoomId++}`;
-      const room = { id, name, maxPlayers: 2, players: [] };
+      const room = makeRoom(id, name);     // << use makeRoom so it has ball + owner
       rooms.set(id, room);
       broadcastToLobby();
-      // Optional: auto-join the creator
       if (data.autoJoin) joinRoom(ws, id);
       return;
     }
+
 
     if (data.type === 'joinRoom') {
       return joinRoom(ws, data.roomId);
@@ -158,6 +158,7 @@ wss.on('connection', (ws) => {
     if (data.type === 'pickupBall') {
       const room = rooms.get(ws._roomId);
       if (!room) return;
+      ensureRoomState(room);
       if (!room.ballOwnerRole) {
         room.ballOwnerRole = ws._role;
         room.ball.held = true;
@@ -168,6 +169,7 @@ wss.on('connection', (ws) => {
     if (data.type === 'releaseBall') {
       const room = rooms.get(ws._roomId);
       if (!room) return;
+      ensureRoomState(room);
       if (room.ballOwnerRole === ws._role) {
         room.ball.held = false; // keep owner while ball is in air
         broadcastRoom(room, { type:'ballOwner', role: ws._role, held:false });
@@ -177,10 +179,12 @@ wss.on('connection', (ws) => {
     if (data.type === 'ball') {
       const room = rooms.get(ws._roomId);
       if (!room) return;
+      ensureRoomState(room);
       if (room.ballOwnerRole === ws._role) {
         room.ball = { x:data.x, y:data.y, z:data.z, vx:data.vx, vy:data.vy, vz:data.vz, held:data.held === true };
         broadcastRoom(room, { type:'ball', ...room.ball });
       }
+      return;
     }
 
 
