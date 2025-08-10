@@ -14,16 +14,16 @@ const wss = new WebSocket.Server({ server });
 // In your lobby server:
 const rooms = new Map(); // already there
 
-function newBall() {
-  return { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false };
-}
 function makeRoom(id, name) {
-  return { id, name, maxPlayers:2, players:[], ball: newBall(), ballOwnerRole: null };
+  return {
+    id, name,
+    maxPlayers: 2,
+    players: [],
+    ball: { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false },
+    ballOwnerRole: null, // 'player1' | 'player2' | null
+  };
 }
-function ensureRoomState(room) {
-  if (!room.ball) room.ball = newBall();
-  if (room.ballOwnerRole === undefined) room.ballOwnerRole = null;
-}
+
 let nextRoomId = 1;
 
 function summarizeRooms() {
@@ -124,13 +124,13 @@ wss.on('connection', (ws) => {
     if (data.type === 'createRoom') {
       const name = (data.name || `Room ${nextRoomId}`).slice(0, 40);
       const id = `room${nextRoomId++}`;
-      const room = makeRoom(id, name);     // << use makeRoom so it has ball + owner
+      const room = makeRoom(id, name);
       rooms.set(id, room);
       broadcastToLobby();
+      // Optional: auto-join the creator
       if (data.autoJoin) joinRoom(ws, id);
       return;
     }
-
 
     if (data.type === 'joinRoom') {
       return joinRoom(ws, data.roomId);
