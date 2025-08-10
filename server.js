@@ -205,7 +205,8 @@ wss.on('connection', (ws) => {
       if (!room) return;
       if (room.ballOwnerRole === ws._role) {
         room.ball.held = false; // keep owner while ball is in air
-        broadcastRoom(room, { type:'ballOwner', role: ws._role, held:false });
+        room.ballOwnerRole = null;
+        broadcastRoom(room, { type:'ballOwner', role: null, held:false });
       }
     }
 
@@ -242,7 +243,7 @@ wss.on('connection', (ws) => {
       room.ball.held = false;
       // optional: reset to center
       // room.ball = { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false };
-      broadcastRoom(room, { type:'ball', ...room.ball }, ws);
+      broadcastRoom(room, { type:'ballOwner', role:null, held:false });
       return;
     }
   });
