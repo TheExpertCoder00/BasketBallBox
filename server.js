@@ -8,22 +8,24 @@ const server = http.createServer((req, res) => {
   res.end('BasketballBox WebSocket Server is live (lobby build).');
 });
 
-// Disable per-message compression to cut latency on hosts like Render
 const wss = new WebSocket.Server({ server, perMessageDeflate: false });
 
-// ----- Rooms -----
-const rooms = new Map();
-let nextRoomId = 1;
+server.on('connection', (socket) => socket.setNoDelay(true));
+// Room model: id, name, maxPlayers (2), players: [{ws, id, role, ready}]
+// In your lobby server:
+const rooms = new Map(); // already there
 
 function makeRoom(id, name) {
   return {
     id, name,
     maxPlayers: 2,
     players: [],
-    ball: { x: 0, y: 0.25, z: 0, vx: 0, vy: 0, vz: 0, held: false },
+    ball: { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false },
     ballOwnerRole: null, // 'player1' | 'player2' | null
   };
 }
+
+let nextRoomId = 1;
 
 function summarizeRooms() {
   return [...rooms.values()].map(r => ({
@@ -43,13 +45,9 @@ function broadcastToLobby() {
 }
 
 function broadcastRoom(room, payload, exceptWs = null) {
-  const msg = JSON.stringify(payload);
   for (const p of room.players) {
     if (p.ws.readyState === WebSocket.OPEN && p.ws !== exceptWs) {
-      // Avoid sending if the socket is already heavily buffered
-      if (p.ws.bufferedAmount < 512 * 1024) {
-        p.ws.send(msg);
-      }
+      p.ws.send(JSON.stringify(payload));
     }
   }
 }
@@ -83,12 +81,10 @@ function joinRoom(ws, roomId) {
   // Tell the joiner what they are
   ws.send(JSON.stringify({ type: 'joinedRoom', roomId: room.id, role }));
 
-  // Sync current ball state & owner to the joiner
-  ws.send(JSON.stringify({ type: 'ballOwner', role: room.ballOwnerRole, held: room.ball.held }));
-  ws.send(JSON.stringify({ type: 'ball', ...room.ball }));
-
   // Update lobby counts
   broadcastToLobby();
+
+  // If two players are present and both say "ready", we’ll kick off later
 }
 
 function leaveCurrentRoom(ws) {
@@ -98,23 +94,20 @@ function leaveCurrentRoom(ws) {
   if (!room) return;
 
   room.players = room.players.filter(p => p.ws !== ws);
-
-  // If owner left, release ownership
-  if (room.ballOwnerRole === ws._role) {
-    room.ballOwnerRole = null;
-    room.ball.held = false;
-    broadcastRoom(room, { type: 'ballOwner', role: null, held: false });
-  }
-
   ws._roomId = null;
   ws._role = null;
 
+  // Let remaining player know the other left
   broadcastRoom(room, { type: 'opponentLeft' });
+
   deleteRoomIfEmpty(room);
   broadcastToLobby();
 }
 
 wss.on('connection', (ws) => {
+  if (ws._socket && ws._socket.setNoDelay) ws._socket.setNoDelay(true);
+
+  // Default: user is in the lobby (no room)
   ws._roomId = null;
   ws._role = null;
 
@@ -125,7 +118,7 @@ wss.on('connection', (ws) => {
     let data;
     try { data = JSON.parse(msg.toString()); } catch { return; }
 
-    // ----- Lobby commands -----
+    // LOBBY COMMANDS
     if (data.type === 'listRooms') {
       ws.send(JSON.stringify({ type: 'rooms', rooms: summarizeRooms() }));
       return;
@@ -137,6 +130,7 @@ wss.on('connection', (ws) => {
       const room = makeRoom(id, name);
       rooms.set(id, room);
       broadcastToLobby();
+      // Optional: auto-join the creator
       if (data.autoJoin) joinRoom(ws, id);
       return;
     }
@@ -150,7 +144,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // ----- In-room events -----
+    // IN-ROOM GAME EVENTS
     const room = ws._roomId ? rooms.get(ws._roomId) : null;
     if (!room) return;
 
@@ -164,39 +158,37 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // --- Ball ownership & state (server-authoritative) ---
     if (data.type === 'pickupBall') {
+      const room = rooms.get(ws._roomId);
+      if (!room) return;
       if (!room.ballOwnerRole) {
         room.ballOwnerRole = ws._role;
         room.ball.held = true;
-        broadcastRoom(room, { type: 'ballOwner', role: ws._role, held: true });
+        broadcastRoom(room, { type:'ballOwner', role: ws._role, held:true });
       }
-      return;
     }
 
     if (data.type === 'releaseBall') {
+      const room = rooms.get(ws._roomId);
+      if (!room) return;
       if (room.ballOwnerRole === ws._role) {
-        room.ball.held = false; // keep ownership while in air
-        broadcastRoom(room, { type: 'ballOwner', role: ws._role, held: false });
+        room.ball.held = false; // keep owner while ball is in air
+        broadcastRoom(room, { type:'ballOwner', role: ws._role, held:false });
       }
-      return;
     }
 
     if (data.type === 'ball') {
-      // Only the current owner may update server ball state
+      const room = rooms.get(ws._roomId);
+      if (!room) return;
       if (room.ballOwnerRole === ws._role) {
-        room.ball = {
-          x: data.x, y: data.y, z: data.z,
-          vx: data.vx, vy: data.vy, vz: data.vz,
-          held: data.held === true
-        };
-        // DO NOT broadcast here (we tick-broadcast below)
+        room.ball = { x:data.x, y:data.y, z:data.z, vx:data.vx, vy:data.vy, vz:data.vz, held:data.held === true };
+        broadcastRoom(room, { type:'ball', ...room.ball });
       }
-      return;
     }
 
-    // Forward other sync messages (not ball; ball is handled above)
-    if (['position', 'score', 'animation'].includes(data.type)) {
+
+    // Forward sync messages to the other player
+    if (['position','score','animation'].includes(data.type)) {
       broadcastRoom(room, data, ws);
       return;
     }
@@ -207,20 +199,13 @@ wss.on('connection', (ws) => {
     if (room && room.ballOwnerRole === ws._role) {
       room.ballOwnerRole = null;
       room.ball.held = false;
-      broadcastRoom(room, { type: 'ballOwner', role: null, held: false });
+      // optional: reset to center
+      // room.ball = { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false };
+      broadcastRoom(room, { type:'ball', ...room.ball }, ws);
+      return;
     }
-    leaveCurrentRoom(ws);
   });
 });
-
-// ----- Fixed-rate ball broadcast (reduces buffering/“slow-mo”) -----
-const TICK_MS = 33; // ~30 Hz
-setInterval(() => {
-  for (const room of rooms.values()) {
-    if (!room || room.players.length === 0) continue;
-    broadcastRoom(room, { type: 'ball', ...room.ball });
-  }
-}, TICK_MS);
 
 server.listen(PORT, () => {
   console.log(`✅ Lobby server listening on port ${PORT}`);
