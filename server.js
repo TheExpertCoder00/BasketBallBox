@@ -9,7 +9,6 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocket.Server({ server, perMessageDeflate: false });
-
 server.on('connection', (socket) => socket.setNoDelay(true));
 // Room model: id, name, maxPlayers (2), players: [{ws, id, role, ready}]
 // In your lobby server:
@@ -22,6 +21,7 @@ function makeRoom(id, name) {
     players: [],
     ball: { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false },
     ballOwnerRole: null, // 'player1' | 'player2' | null
+    sim: { active:false, timer:null } // server-side ball sim
   };
 }
 
@@ -104,8 +104,39 @@ function leaveCurrentRoom(ws) {
   broadcastToLobby();
 }
 
+const TICK_MS = 1000/60;      // match ~60fps client feel
+const G_PER_TICK = 0.01;      // matches your client gravity-per-frame
+const GROUND_Y = 0.25;        // your ball’s resting Y in makeRoom
+
+function startBallSim(room) {
+  if (room.sim.active) return;
+  room.sim.active = true;
+  room.sim.timer = setInterval(() => {
+    const b = room.ball;
+    // simple ballistic update to mirror client
+    b.vy -= G_PER_TICK;
+    b.x += b.vx;
+    b.y += b.vy;
+    b.z += b.vz;
+    // stop when it hits "ground"
+    if (b.y <= GROUND_Y) {
+      b.y = GROUND_Y;
+      b.vx = b.vy = b.vz = 0;
+      stopBallSim(room);
+    }
+    // Broadcast to everyone (owner mopponent) to keep them in lockstep
+    broadcastRoom(room, { type:'ball', ...b });
+  }, TICK_MS);
+}
+
+function stopBallSim(room) {
+  if (room.sim.timer) clearInterval(room.sim.timer);
+  room.sim.timer = null;
+  room.sim.active = false;
+}
+
 wss.on('connection', (ws) => {
-  if (ws._socket && ws._socket.setNoDelay) ws._socket.setNoDelay(true);
+  if (ws._socket?.setNoDelay) ws._socket.setNoDelay(true);
 
   // Default: user is in the lobby (no room)
   ws._roomId = null;
@@ -161,6 +192,7 @@ wss.on('connection', (ws) => {
     if (data.type === 'pickupBall') {
       const room = rooms.get(ws._roomId);
       if (!room) return;
+      stopBallSim(room);
       if (!room.ballOwnerRole) {
         room.ballOwnerRole = ws._role;
         room.ball.held = true;
@@ -182,7 +214,15 @@ wss.on('connection', (ws) => {
       if (!room) return;
       if (room.ballOwnerRole === ws._role) {
         room.ball = { x:data.x, y:data.y, z:data.z, vx:data.vx, vy:data.vy, vz:data.vz, held:data.held === true };
-        broadcastRoom(room, { type:'ball', ...room.ball });
+        if (room.ball.held) {
+          // Still in-hand: forward to the opponent only (owner already has local state)
+          broadcastRoom(room, { type:'ball', ...room.ball }, ws);
+        } else {
+          // First in-air snapshot: kick off server sim and stop relaying owner spam
+          if (!room.sim.active) startBallSim(room);
+          // While sim is active we do NOT forward owner's in-air frames (they're ignored)
+        }
+        return; // prevent forwarding below
       }
     }
 
@@ -197,6 +237,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     const room = rooms.get(ws._roomId);
     if (room && room.ballOwnerRole === ws._role) {
+      stopBallSim(room);
       room.ballOwnerRole = null;
       room.ball.held = false;
       // optional: reset to center
