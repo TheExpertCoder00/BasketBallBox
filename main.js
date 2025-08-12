@@ -56,6 +56,7 @@ function applySpawnForRoles(offenseRole) {
   const dz = HOOP_POS.z - cameraHolder.position.z;
   yaw = Math.atan2(dx, dz);
   cameraHolder.rotation.y = yaw;
+  localPlayer.rotation.y = yaw + Math.PI;
 
   // Put the remote pawn at its spawn immediately (their client will also snap)
   remotePlayer.position.copy(oppSpawn);
@@ -268,8 +269,16 @@ function showIntermission() {
 
 }
 
+function lerpAngle(a, b, t) {
+  // shortest-path interpolation in [-pi, pi]
+  const TWO_PI = Math.PI * 2;
+  let diff = (b - a) % TWO_PI;
+  if (diff > Math.PI) diff -= TWO_PI;
+  if (diff < -Math.PI) diff += TWO_PI;
+  return a + diff * t;
+}
 
-const socket = new WebSocket("wss://basketballbox.onrender.com");
+const socket = new WebSocket("ws://localhost:8080");
 
 
 let myScore = 0;
@@ -404,6 +413,9 @@ socket.addEventListener('message', (e) => {
 
     case 'position':
       remotePlayer.position.lerp(new THREE.Vector3(data.x, data.y - 0.9, data.z), 0.5);
+      if (typeof data.ry === 'number') {
+        remotePlayer.rotation.y = lerpAngle(remotePlayer.rotation.y, data.ry + Math.PI, 0.3);
+      }
       break;
 
     // Opponent updates their score number → show intermission
@@ -725,100 +737,95 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('mousedown', (e) => {
-  if (holdingBall && e.button === 0) {
-    socket.send(JSON.stringify({ type:'releaseBall' }));
+  if (!holdingBall || e.button !== 0) return;
 
-    const hoopPos = HOOP_POS; // always the single hoop
+  const hoopPos = HOOP_POS; // single hoop
+  const distToHoop = cameraHolder.position.distanceTo(hoopPos);
+  const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
+  const arcBoost = new THREE.Vector3(0, 1.2, 0);
+  dir.add(arcBoost).normalize();
+  const power = Math.min(0.18 + distToHoop * 0.01, 0.25);
 
-    const distToHoop = cameraHolder.position.distanceTo(hoopPos);
-    const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
-    const arcBoost = new THREE.Vector3(0, 1.2, 0);
-    dir.add(arcBoost).normalize();
-    const power = Math.min(0.18 + distToHoop * 0.01, 0.25);
+  // IMPORTANT: do NOT set holdingBall=false or send 'releaseBall' yet.
+  // Keep the ball in-hand during the windup so both clients see the same thing.
 
-    holdingBall = false;
-
-    if (distToHoop < 3) {
-      // console.log(`🚀 [${myRole}] Preparing to dunk!`);
-
-      if (!localActions["0"]) {
-        console.warn(`⚠️ [${myRole}] Dunk animation not loaded.`);
-        return;
-      }
-
-      playAnimation(localActions, "0", true); // Dunk
-
-      const dunkDelay = localCurrentAction.getClip().duration * 0.8 * 1000;
-
-      preparingDunk = true;
-      dunkParams = {
-        dir: hoopPos.clone().sub(cameraHolder.position).normalize(),
-        power: 0.25
-      };
-
-      shootingJumpStart = performance.now();
-      shootingJumpDuration = dunkDelay;
-
-      setTimeout(() => {
-        // console.log(`💥 [${myRole}] Dunk executed!`);
-        ballVelocity.copy(dunkParams.dir).multiplyScalar(dunkParams.power);
-        preparingDunk = false;
-        dunkParams = null;
-        shootingJumpStart = null;
-        ballVelocity.copy(dunkParams.dir).multiplyScalar(dunkParams.power);
-        preparingDunk = false;
-        dunkParams = null;
-        shootingJumpStart = null;
-
-        // SEND FIRST IN-AIR SNAPSHOT (server will accept from last shooter)
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({
-            type: 'ball',
-            x: ball.position.x, y: ball.position.y, z: ball.position.z,
-            vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
-            held: false
-          }));
-        }
-      }, dunkDelay);
-    } else {
-      if (!localActions["6"]) {
-        console.warn(`⚠️ [${myRole}] Shooting animation not loaded yet.`);
-        return;
-      }
-
-      // console.log(`🎯 [${myRole}] Preparing to shoot...`);
-      preparingShot = true;
-      shootParams = { dir, power };
-
-      playAnimation(localActions, "6", true);
-
-      const shootDelay = localCurrentAction.getClip().duration * 0.65 * 1000;
-
-      shootingJumpStart = performance.now();
-      shootingJumpDuration = shootDelay;
-
-      setTimeout(() => {
-        // console.log(`💥 [${myRole}] Releasing shot!`);
-        ballVelocity.copy(shootParams.dir).multiplyScalar(shootParams.power);
-        preparingShot = false;
-        shootParams = null;
-        shootingJumpStart = null;
-        ballVelocity.copy(shootParams.dir).multiplyScalar(shootParams.power);
-        preparingShot = false;
-        shootParams = null;
-        shootingJumpStart = null;
-
-        // SEND FIRST IN-AIR SNAPSHOT
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({
-            type: 'ball',
-            x: ball.position.x, y: ball.position.y, z: ball.position.z,
-            vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
-            held: false
-          }));
-        }
-      }, shootDelay);
+  if (distToHoop < 3) {
+    // DUNK
+    if (!localActions["0"]) {
+      console.warn(`⚠️ [${myRole}] Dunk animation not loaded.`);
+      return;
     }
+    playAnimation(localActions, "0", true); // Dunk
+
+    const dunkDelay = localCurrentAction.getClip().duration * 0.8 * 1000;
+
+    preparingDunk = true;
+    const dunkDir = hoopPos.clone().sub(cameraHolder.position).normalize();
+    const dunkPower = 0.25;
+
+    shootingJumpStart = performance.now();
+    shootingJumpDuration = dunkDelay;
+
+    setTimeout(() => {
+      // Actual release moment
+      holdingBall = false;
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type:'releaseBall' }));
+      }
+
+      ballVelocity.copy(dunkDir).multiplyScalar(dunkPower);
+      preparingDunk = false;
+      shootingJumpStart = null;
+
+      // First in-air seed (server accepts from last shooter, then starts sim)
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'ball',
+          x: ball.position.x, y: ball.position.y, z: ball.position.z,
+          vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
+          held: false
+        }));
+      }
+    }, dunkDelay);
+
+  } else {
+    // JUMPSHOT
+    if (!localActions["6"]) {
+      console.warn(`⚠️ [${myRole}] Shooting animation not loaded yet.`);
+      return;
+    }
+    playAnimation(localActions, "6", true);
+
+    const shootDelay = localCurrentAction.getClip().duration * 0.65 * 1000;
+
+    preparingShot = true;
+    const shotDir = dir.clone();
+    const shotPower = power;
+
+    shootingJumpStart = performance.now();
+    shootingJumpDuration = shootDelay;
+
+    setTimeout(() => {
+      // Actual release moment
+      holdingBall = false;
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type:'releaseBall' }));
+      }
+
+      ballVelocity.copy(shotDir).multiplyScalar(shotPower);
+      preparingShot = false;
+      shootingJumpStart = null;
+
+      // First in-air seed
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'ball',
+          x: ball.position.x, y: ball.position.y, z: ball.position.z,
+          vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
+          held: false
+        }));
+      }
+    }, shootDelay);
   }
 });
 
@@ -895,6 +902,7 @@ function animate() {
   localPlayer.position.x = cameraHolder.position.x;
   localPlayer.position.z = cameraHolder.position.z;
 
+  localPlayer.rotation.y = yaw + Math.PI;
 
   const leftHandBone = localAvatar?.getObjectByName("LeftHand");
 
@@ -989,7 +997,8 @@ function animate() {
       type: 'position',
       x: cameraHolder.position.x,
       y: cameraHolder.position.y,
-      z: cameraHolder.position.z
+      z: cameraHolder.position.z,
+      ry: yaw
     }));
 
     // Always send; server filters (holder or last shooter). Paused → we skip anyway.
