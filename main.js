@@ -301,28 +301,112 @@ let smoothedBounce = 0.25;
 // --- LOBBY UI SETUP ---
 const lobbyEl = document.getElementById('lobby');
 const roomListEl = document.getElementById('roomList');
+const publicListEl = document.getElementById('publicRooms');
+const privateListEl = document.getElementById('privateRooms');
+const pwModal   = document.getElementById('pwModal');
+const pwRoomName= document.getElementById('pwRoomName');
+const pwInput   = document.getElementById('pwInput');
+const pwError   = document.getElementById('pwError');
+const pwCancel  = document.getElementById('pwCancel');
+const pwJoin    = document.getElementById('pwJoin');
+let pendingJoinRoomId = null;
 const createRoomBtn = document.getElementById('createRoomBtn');
 const newRoomNameInput = document.getElementById('newRoomName');
+const isPrivateChk = document.getElementById('isPrivateChk');
+const roomPasswordInput = document.getElementById('roomPassword');
+const tabPublic = document.getElementById('tabPublic');
+const tabPrivate = document.getElementById('tabPrivate');
 
-function renderRooms(rooms) {
-  if (!rooms || rooms.length === 0) {
-    roomListEl.innerHTML = `<div style="opacity:.8">No rooms yet. Create one!</div>`;
+// Tabs behavior
+function setTab(tab) {
+  if (tab === 'public') {
+    publicListEl.style.display = '';
+    privateListEl.style.display = 'none';
+    tabPublic.style.background = '#1a1a1a'; tabPublic.style.color = '#fff';
+    tabPrivate.style.background = '#111';   tabPrivate.style.color = '#aaa';
+  } else {
+    publicListEl.style.display = 'none';
+    privateListEl.style.display = '';
+    tabPrivate.style.background = '#1a1a1a'; tabPrivate.style.color = '#fff';
+    tabPublic.style.background = '#111';     tabPublic.style.color = '#aaa';
+  }
+}
+
+tabPublic.onclick = () => setTab('public');
+tabPrivate.onclick = () => setTab('private');
+setTab('public');
+
+// Toggle password input when creating
+isPrivateChk.onchange = () => {
+  roomPasswordInput.style.display = isPrivateChk.checked ? '' : 'none';
+};
+
+function renderList(targetEl, list, isPrivate) {
+  if (!list || list.length === 0) {
+    targetEl.innerHTML = `<div style="opacity:.8">No ${isPrivate ? 'private' : 'public'} rooms yet. Create one!</div>`;
     return;
   }
-  roomListEl.innerHTML = rooms.map(r => `
+  targetEl.innerHTML = list.map(r => `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-bottom:1px solid #222;">
-      <div><b>${r.name}</b> — ${r.count}/${r.max}</div>
+      <div><b>${r.name}</b> — ${r.count}/${r.max}${isPrivate ? ' 🔒' : ''}</div>
       <button data-room="${r.id}" style="cursor:pointer; padding:6px 10px; border-radius:8px; border:0;">Join</button>
     </div>
   `).join('');
-  [...roomListEl.querySelectorAll('button[data-room]')].forEach(btn => {
-    btn.onclick = () => socket.send(JSON.stringify({ type:'joinRoom', roomId: btn.dataset.room }));
+  [...targetEl.querySelectorAll('button[data-room]')].forEach(btn => {
+    btn.onclick = () => {
+      if (isPrivate) {
+        openPwModal(btn.dataset.room, btn.dataset.name);
+      } else {
+        socket.send(JSON.stringify({ type:'joinRoom', roomId: btn.dataset.room }));
+      }
+    };
   });
 }
 
+function renderRooms(rooms) {
+  const pub = rooms.filter(r => !r.private);
+  const pri = rooms.filter(r =>  r.private);
+  renderList(publicListEl, pub, false);
+  renderList(privateListEl, pri, true);
+}
+
+function openPwModal(roomId, roomName) {
+  pendingJoinRoomId = roomId;
+  pwRoomName.textContent = roomName;
+  pwInput.value = '';
+  pwError.textContent = '';
+  pwModal.style.display = 'flex';
+  setTimeout(() => pwInput.focus(), 0);
+}
+function closePwModal() {
+  pendingJoinRoomId = null;
+  pwModal.style.display = 'none';
+}
+pwCancel.onclick = closePwModal;
+pwInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') pwJoin.click();
+});
+pwJoin.onclick = () => {
+  const pw = pwInput.value.trim();
+  if (!pendingJoinRoomId) return;
+  socket.send(JSON.stringify({ type:'joinRoom', roomId: pendingJoinRoomId, password: pw }));
+};
+
 createRoomBtn.onclick = () => {
   const name = newRoomNameInput.value.trim() || 'My Room';
-  socket.send(JSON.stringify({ type:'createRoom', name, autoJoin:true }));
+  const isPriv = isPrivateChk.checked;
+  const pw = roomPasswordInput.value;
+  if (isPriv && !pw) {
+    alert('Please set a password for private rooms.');
+    return;
+  }
+  socket.send(JSON.stringify({
+    type:'createRoom',
+    name,
+    autoJoin:true,
+    private: isPriv,
+    password: isPriv ? pw : undefined
+  }));
 };
 
 // Ask for room list on connect
@@ -337,6 +421,15 @@ socket.addEventListener('message', (e) => {
   const data = JSON.parse(e.data);
 
   switch (data.type) {
+    case 'error':
+      // If we're in the modal flow, show the error there
+      if (pwModal.style.display === 'flex') {
+        pwError.textContent = data.message || 'Something went wrong.';
+      } else {
+        alert(data.message || 'Something went wrong.');
+      }
+      break;
+
     case 'rooms':
       renderRooms(data.rooms);
       break;
@@ -1020,4 +1113,3 @@ function animate() {
   if (remoteMixer) remoteMixer.update(delta);
 }
 animate();
-
