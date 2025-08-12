@@ -868,7 +868,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (document.pointerLockElement === document.body) {
+  if (document.pointerLockElement === canvas) {
     yaw -= e.movementX * 0.001;
     pitch -= e.movementY * 0.001;
     pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
@@ -1173,3 +1173,4 @@ function animate() {
   if (remoteMixer) remoteMixer.update(delta);
 }
 animate();
+
