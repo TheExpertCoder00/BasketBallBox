@@ -25,18 +25,50 @@
     <div id="lobby" style="
       position:fixed; inset:0; background:#0b0b0ee6; color:white; z-index:10000;
       display:flex; align-items:center; justify-content:center; font-family:Arial;">
-      <div style="width:min(600px, 92%);">
+      <div style="width:min(720px, 92%);">
         <h2 style="margin:0 0 12px">🏀 BasketballBox — Join a Room</h2>
 
-        <div id="roomList" style="background:#111; border-radius:12px; padding:12px; max-height:40vh; overflow:auto; margin-bottom:12px;">
-          <!-- rooms will populate here -->
+        <!-- Tabs -->
+        <div style="display:flex; gap:8px; margin-bottom:8px;">
+          <button id="tabPublic" class="tab active"
+            style="padding:8px 12px;border-radius:10px;border:1px solid #333;background:#1a1a1a;color:#fff;cursor:pointer">
+            Public
+          </button>
+          <button id="tabPrivate" class="tab"
+            style="padding:8px 12px;border-radius:10px;border:1px solid #333;background:#111;color:#aaa;cursor:pointer">
+            Private
+          </button>
         </div>
 
-        <div style="display:flex; gap:8px;">
-          <input id="newRoomName" placeholder="Room name" style="flex:1; padding:10px; border-radius:8px; border:0;">
+        <div id="roomList" style="background:#111; border-radius:12px; padding:12px; max-height:40vh; overflow:auto; margin-bottom:12px;">
+          <div id="publicRooms"></div>
+          <div id="privateRooms" style="display:none"></div>
+        </div>
+
+        <!-- Create -->
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input id="newRoomName" placeholder="Room name" style="flex:1; min-width:180px; padding:10px; border-radius:8px; border:0;">
+          <label style="display:flex; gap:6px; align-items:center; background:#121212; padding:8px 10px; border-radius:8px; border:1px solid #222;">
+            <input type="checkbox" id="isPrivateChk"> Private
+          </label>
+          <input id="roomPassword" placeholder="Password" style="flex:0.8; min-width:160px; padding:10px; border-radius:8px; border:0; display:none;">
           <button id="createRoomBtn" style="padding:10px 14px; border-radius:8px; border:0; cursor:pointer;">Create & Join</button>
         </div>
       </div>
+      <!-- Password Modal -->
+      <div id="pwModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
+        align-items:center; justify-content:center;">
+        <div style="background:#111; border:1px solid #222; border-radius:12px; padding:16px; width:min(420px, 92%); color:#fff;">
+          <div style="font-weight:700; margin-bottom:8px;">Join Private Room</div>
+          <div id="pwRoomName" style="opacity:.8; margin-bottom:12px;"></div>
+          <input id="pwInput" type="password" placeholder="Password" style="width:100%; padding:10px; border:0; border-radius:8px; margin-bottom:10px;">
+          <div id="pwError" style="color:#ff6b6b; min-height:18px; margin-bottom:8px;"></div>
+          <div style="display:flex; gap:8px; justify-content:flex-end;">
+            <button id="pwCancel" style="padding:8px 12px; border-radius:8px; border:0; background:#222; color:#ddd; cursor:pointer;">Cancel</button>
+            <button id="pwJoin"   style="padding:8px 12px; border-radius:8px; border:0; background:#3a86ff; color:#fff; cursor:pointer;">Join</button>
+          </div>
+        </div>
+      </div> 
     </div>
 
     <div id="scoreboard">
