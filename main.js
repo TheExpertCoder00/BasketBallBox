@@ -8,6 +8,73 @@ const animationNames = [];
 let currentAnimIndex = 0;
 let localAvatar, remoteAvatar, localMixer, remoteMixer;
 
+// --- Court anchors (unchanged) ---
+const HOOP_POS    = new THREE.Vector3(0, 2.6, -6.6);
+const BACKBOARD_Z = HOOP_POS.z - 0.4;
+
+// --- Base (old) dimensions (same numbers you had before) ---
+const X_HALF_BASE   = 6.0;                // old half-width along X  → old width = 12
+const BACK_Z_BASE   = HOOP_POS.z - 0.9;   // back line ~1m behind rim
+const FRONT_Z_BASE  = HOOP_POS.z + 6.0;   // ~6m in front of rim
+const Z_DEPTH_BASE  = FRONT_Z_BASE - BACK_Z_BASE; // old depth along Z (≈ 6.9)
+
+// === SWAP: make new X width = old Z depth, and new Z depth = old X width ===
+const COURT_HALF_X   = Z_DEPTH_BASE / 2;     // new half-width along X  (≈ 3.45)
+const COURT_BACK_Z   = BACK_Z_BASE;          // keep hoop near back like before
+const COURT_FRONT_Z  = COURT_BACK_Z + (X_HALF_BASE * 2); // new Z depth = old width (12)
+
+// Derived (used by floor, fences, clamps)
+const COURT_WIDTH     = COURT_HALF_X * 2;                // ≈ 6.9 (was 12)
+const COURT_DEPTH     = COURT_FRONT_Z - COURT_BACK_Z;    // = 12 (was ≈ 6.9)
+const FLOOR_CENTER_Z  = (COURT_FRONT_Z + COURT_BACK_Z) / 2;
+
+const FENCE_H = 3.0;
+const FENCE_THICK = 0.1;
+
+
+const DEF_Z = HOOP_POS.z + 5;  // defender between hoop and offense
+const OFF_Z = HOOP_POS.z + 8;  // offense out front with ball
+const DEFENDER_SPAWN = new THREE.Vector3(HOOP_POS.x, 1.6, DEF_Z);
+const OFFENSE_SPAWN  = new THREE.Vector3(HOOP_POS.x, 1.6, OFF_Z);
+
+
+
+function applySpawnForRoles(offenseRole) {
+  // ALWAYS: hoop (x≈0)  —  defender (x≈+2.8)  —  offense+ball (x≈+5.8)
+
+  const iAmOffense = (myRole === offenseRole);
+  const mySpawn  = iAmOffense ? OFFENSE_SPAWN : DEFENDER_SPAWN;
+  const oppSpawn = iAmOffense ? DEFENDER_SPAWN : OFFENSE_SPAWN;
+
+  // Move MY pawn + camera
+  cameraHolder.position.copy(mySpawn);
+  localPlayer.position.copy(mySpawn);
+  localPlayer.position.y -= 0.9;
+
+  // Face the hoop
+  const dx = HOOP_POS.x - cameraHolder.position.x;
+  const dz = HOOP_POS.z - cameraHolder.position.z;
+  yaw = Math.atan2(dx, dz);
+  cameraHolder.rotation.y = yaw;
+
+  // Put the remote pawn at its spawn immediately (their client will also snap)
+  remotePlayer.position.copy(oppSpawn);
+
+  // Ball: offense holds it; defense does not
+  holdingBall = iAmOffense;
+  ballVelocity.set(0, 0, 0);
+
+  if (iAmOffense) {
+    // put the ball in my hand right away (server also sets me owner/held)
+    const holdOffset = new THREE.Vector3(0, -0.3, -0.8);
+    ball.position.copy(ballHolder.localToWorld(holdOffset));
+  } else {
+    // show ball near the offense spawn until server’s owner/held arrives
+    ball.position.set(OFFENSE_SPAWN.x, 0.25, OFFENSE_SPAWN.z);
+  }
+}
+
+
 let isRemotePlayerReady = false;
 let isLocalPlayerReady = true; // assume this tab is ready
 
@@ -16,6 +83,191 @@ let qPressed = false;
 let fPressed = false;
 
 let myRole = null;
+
+let serverSimActive = false;   // server is driving airborne physics
+let lastBallSeq = -1;          // drop stale ball packets
+
+let intermission = false;      // true during the “Point!” pause
+let intermissionTimer = null;
+const INTERMISSION_MS = 1800;
+let lastRoles = { offense:null, defense:null }; // remember who’s offense after server announces
+
+
+// === Coin Flip & Roles UI (5s spin + owner call) ===
+const loadingEl = document.getElementById('loadingScreen');
+let coinSettleAt = 0;
+
+function ensureCoinUI() {
+  if (document.getElementById('coinFlipContainer')) return;
+
+  const style = document.createElement('style');
+  style.textContent = `
+  #loadingScreen { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+  .banner { font-family: Arial, sans-serif; text-align: center; }
+  #coinFlipContainer { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 90vw; }
+  .coin { width: 110px; height: 110px; border-radius: 50%; border: 4px solid #ffd700; background: radial-gradient(circle at 30% 30%, #ffe082, #f1c40f); box-shadow: 0 10px 30px rgba(0,0,0,0.4); transform-style: preserve-3d; }
+  .spin { animation: coin-spin 0.8s linear infinite; }
+  @keyframes coin-spin { from { transform: rotateY(0deg) } to { transform: rotateY(360deg) } }
+  .settle-heads { animation: settle-h 0.6s ease forwards; }
+  .settle-tails { animation: settle-t 0.6s ease forwards; }
+  @keyframes settle-h { to { transform: rotateY(0deg) } }
+  @keyframes settle-t { to { transform: rotateY(180deg) } }
+  #roleBanner { font-size: 20px; line-height: 1.4; }
+  #flipLabel { font-size: 18px; opacity: 0.95; }
+  #coinPromptBtns { display:flex; gap:12px; }
+  .btn { cursor:pointer; font-family: Arial, sans-serif; padding:8px 14px; border-radius:10px; border:1px solid #444; background:#222; color:#fff; }
+  .btn[disabled] { opacity: 0.6; cursor: default; }
+  `;
+  document.head.appendChild(style);
+
+  const cont = document.createElement('div');
+  cont.id = 'coinFlipContainer';
+
+  const flipLabel = document.createElement('div');
+  flipLabel.id = 'flipLabel';
+  flipLabel.className = 'banner';
+  flipLabel.textContent = 'Getting ready…';
+
+  const coin = document.createElement('div');
+  coin.id = 'coin';
+  coin.className = 'coin';
+
+  const prompt = document.createElement('div');
+  prompt.id = 'coinPromptBtns';
+  prompt.style.display = 'none';
+  const headsBtn = document.createElement('button');
+  headsBtn.className = 'btn'; headsBtn.textContent = 'Heads';
+  const tailsBtn = document.createElement('button');
+  tailsBtn.className = 'btn'; tailsBtn.textContent = 'Tails';
+  prompt.appendChild(headsBtn); prompt.appendChild(tailsBtn);
+
+  const roleBanner = document.createElement('div');
+  roleBanner.id = 'roleBanner';
+  roleBanner.className = 'banner';
+  roleBanner.innerHTML = '';
+
+  cont.appendChild(flipLabel);
+  cont.appendChild(coin);
+  cont.appendChild(prompt);
+  cont.appendChild(roleBanner);
+  loadingEl.appendChild(cont);
+
+  // wire buttons
+  headsBtn.onclick = () => {
+    headsBtn.disabled = tailsBtn.disabled = true;
+    headsBtn.textContent = 'Heads ✓';
+    sendCoinCall('heads');
+  };
+  tailsBtn.onclick = () => {
+    headsBtn.disabled = tailsBtn.disabled = true;
+    tailsBtn.textContent = 'Tails ✓';
+    sendCoinCall('tails');
+  };
+}
+
+function sendCoinCall(call) {
+  try {
+    socket.send(JSON.stringify({ type:'coinCall', call }));
+    const lbl = document.getElementById('flipLabel');
+    if (lbl) lbl.textContent = `You called ${call.toUpperCase()}…`;
+  } catch {}
+}
+
+function showCoinPrompt(isCaller) {
+  ensureCoinUI();
+  const p = document.getElementById('coinPromptBtns');
+  const lbl = document.getElementById('flipLabel');
+  const coin = document.getElementById('coin');
+  if (coin) coin.className = 'coin';
+  if (isCaller) {
+    p.style.display = 'flex';
+    lbl.textContent = 'Choose Heads or Tails';
+  } else {
+    p.style.display = 'none';
+    lbl.textContent = 'Room owner is choosing Heads or Tails…';
+  }
+  const rb = document.getElementById('roleBanner'); if (rb) rb.innerHTML='';
+}
+
+function startCoinSpin(caller, call, durationMs) {
+  ensureCoinUI();
+  const p = document.getElementById('coinPromptBtns');
+  const lbl = document.getElementById('flipLabel');
+  const coin = document.getElementById('coin');
+  if (p) p.style.display = 'none';
+  if (coin) coin.className = 'coin spin';
+  lbl.textContent = `${caller === myRole ? 'You' : 'Room owner'} called ${call.toUpperCase()}…`;
+  coinSettleAt = performance.now() + (durationMs || 5000);
+}
+
+function settleCoin(result) {
+  const coin = document.getElementById('coin');
+  if (!coin) return;
+  coin.className = 'coin ' + (result === 'heads' ? 'settle-heads' : 'settle-tails');
+  const label = document.getElementById('flipLabel');
+  if (label) label.textContent = (result === 'heads' ? 'Heads!' : 'Tails!');
+}
+
+function showRoles(offenseRole, defenseRole) {
+  ensureCoinUI();
+  const rb = document.getElementById('roleBanner');
+  const meOff = offenseRole === myRole ? 'You' : 'Opponent';
+  const meDef = defenseRole === myRole ? 'You' : 'Opponent';
+  rb.innerHTML = `Offense: <b>${meOff}</b><br/>Defense: <b>${meDef}</b>`;
+}
+// === End coin UI ===
+
+function ensureIntermissionUI() {
+  if (document.getElementById('intermission')) return;
+
+  const style = document.createElement('style');
+  style.textContent = `
+    #intermission{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:9999}
+    #interCard{background:#111;padding:22px 26px;border-radius:14px;border:1px solid #333;min-width:300px;text-align:center;color:#fff;font-family:Arial, sans-serif}
+    #interTitle{font-size:28px;font-weight:700;margin-bottom:8px}
+    #interScores{font-size:18px;opacity:.95}
+    #interWho{font-size:16px;margin-top:6px;opacity:.9}
+  `;
+  document.head.appendChild(style);
+
+  const root = document.createElement('div');
+  root.id = 'intermission';
+  root.innerHTML = `
+    <div id="interCard">
+      <div id="interTitle">Point!</div>
+      <div id="interScores">You <b id="meScore">0</b> — Opponent <b id="oppScore">0</b></div>
+      <div id="interWho"></div>
+    </div>`;
+  document.body.appendChild(root);
+}
+
+function updateIntermissionWho() {
+  const root = document.getElementById('intermission');
+  if (!root || root.style.display !== 'flex') return;
+  const who = document.getElementById('interWho');
+  if (!who) return;
+  if (lastRoles.offense) {
+    who.textContent = (lastRoles.offense === myRole) ? 'Your ball next.' : "Opponent's ball next.";
+  }
+}
+
+function showIntermission() {
+  ensureIntermissionUI();
+  intermission = true;
+  if (intermissionTimer) { clearTimeout(intermissionTimer); intermissionTimer = null; }
+  document.getElementById('meScore').textContent  = String(myScore);
+  document.getElementById('oppScore').textContent = String(theirScore);
+  updateIntermissionWho();
+  document.getElementById('intermission').style.display = 'flex';
+
+  intermissionTimer = setTimeout(() => {
+    intermission = false;
+    document.getElementById('intermission').style.display = 'none';
+    if (lastRoles.offense) applySpawnForRoles(lastRoles.offense);
+  }, INTERMISSION_MS);
+
+}
+
 
 const socket = new WebSocket("wss://basketballbox.onrender.com");
 
@@ -71,87 +323,102 @@ socket.addEventListener('open', () => {
 
 let currentBallOwner = null;
 
+
 socket.addEventListener('message', (e) => {
   const data = JSON.parse(e.data);
 
-  if (data.type === 'ballOwner') {
-    currentBallOwner = data.role;              // 'player1' | 'player2' | null
-    holdingBall = (myRole === currentBallOwner && data.held === true);
-  }
-
-  if (data.type === 'ball') {
-    // Accept server state unless you're the owner (you already simulate locally)
-    if (myRole !== currentBallOwner) {
-      ball.position.set(data.x, data.y, data.z);
-      ballVelocity.set(data.vx, data.vy, data.vz);
-    }
-  }
-});
-
-
-socket.addEventListener("message", async (event) => {
-    const data = JSON.parse(event.data);
-    // console.log(`📨 [${myRole || 'unassigned'}] Received message:`, data);
-
-    if (data.type === "role") {
-        myRole = data.role;
-        socket.send(JSON.stringify({ type: "ready", role: myRole }));
-        // console.log(`🎮 Assigned role: ${myRole}`);
-
-        // Spawn player based on role
-        if (myRole === "player1") {
-            cameraHolder.position.set(-5, 1.6, 5);
-        } else {
-            cameraHolder.position.set(5, 1.6, -5);
-        }
-    }
-
-    if (data.type === "bothReady") {
-        gameStarted = true;
-        document.getElementById("loadingScreen").style.display = "none";
-        // console.log("✅ Both players ready, starting game.");
-    }
-
-    if (data.type === "position") {
-        remotePlayer.position.lerp(new THREE.Vector3(data.x, data.y - 0.9, data.z), 0.5);
-    }
-    if (data.type === "ball") {
-        if (!holdingBall) { // only update if you're not holding it
-            ball.position.set(data.x, data.y, data.z);
-            ballVelocity.set(data.vx, data.vy, data.vz);
-        }
-    }
-    if (data.type === "score") {
-        theirScore = data.score;
-        document.getElementById("theirScore").textContent = theirScore;
-    }
-    if (data.type === "animation") {
-        // console.log(`🎬 [${myRole}] Processing animation: ${data.animation}, lock: ${data.lock}`);
-        if (remoteActions[data.animation]) {
-            playAnimation(remoteActions, data.animation, data.lock || false);
-            // console.log(`▶ [${myRole}] Playing remote animation: ${data.animation}`);
-        } else {
-            console.warn(`⚠️ [${myRole}] Remote animation not found: ${data.animation}`);
-        }
-    }
-    if (data.type === 'rooms') {
+  switch (data.type) {
+    case 'rooms':
       renderRooms(data.rooms);
-    }
+      break;
 
-    if (data.type === 'joinedRoom') {
+    case 'joinedRoom':
       myRole = data.role;
-      // set spawn based on role (same logic you use today)
-      if (myRole === "player1") {
-        cameraHolder.position.set(-5, 1.6, 5);
-      } else {
-        cameraHolder.position.set(5, 1.6, -5);
-      }
-      // Hide lobby and show "waiting for opponent" until bothReady arrives
+      if (myRole === 'player1') cameraHolder.position.set(-5, 1.6, 5);
+      else                      cameraHolder.position.set( 5, 1.6,-5);
       lobbyEl.style.display = 'none';
-      document.getElementById("loadingScreen").style.display = "flex";
+      document.getElementById('loadingScreen').style.display = 'flex';
       socket.send(JSON.stringify({ type: 'ready', role: myRole }));
+      break;
+
+    case 'bothReady':
+      gameStarted = true;
+      ensureCoinUI();
+      break;
+
+    // coin UI
+    case 'coinPrompt':
+      showCoinPrompt(myRole === data.caller);
+      break;
+    case 'coinStart':
+      startCoinSpin(data.caller, data.call, data.durationMs);
+      break;
+    case 'coinFlip': {
+      const d = Math.max(0, coinSettleAt - performance.now());
+      setTimeout(() => settleCoin(data.result), d);
+      break;
     }
 
+    case 'roles':
+      lastRoles.offense = data.offense;
+      lastRoles.defense = data.defense;
+      showRoles(data.offense, data.defense);
+
+      // snap players to the correct left→right layout
+      applySpawnForRoles(data.offense);
+
+      // hide “getting ready” after coin
+      const now = performance.now();
+      const hideDelay = Math.max(0, (coinSettleAt + 800) - now);
+      setTimeout(() => {
+        const ls = document.getElementById('loadingScreen');
+        if (ls) ls.style.display = 'none';
+      }, hideDelay);
+
+      updateIntermissionWho();
+      break;
+
+
+    // server sim flag
+    case 'ballSim':
+      serverSimActive = !!data.active;
+      break;
+
+    // ownership
+    case 'ballOwner':
+      currentBallOwner = data.role; // 'player1' | 'player2' | null
+      holdingBall = (myRole === currentBallOwner && data.held === true);
+      break;
+
+    // stamped authoritative ball
+    case 'ball':
+      if (typeof data.seq === 'number' && data.seq <= lastBallSeq) break; // drop stale
+      lastBallSeq = (typeof data.seq === 'number') ? data.seq : lastBallSeq + 1;
+
+      const iAmAuthoritativeNow = (myRole === currentBallOwner && holdingBall);
+      if (!iAmAuthoritativeNow) {
+        ball.position.set(data.x, data.y, data.z);
+        ballVelocity.set(data.vx, data.vy, data.vz);
+      }
+      break;
+
+    case 'position':
+      remotePlayer.position.lerp(new THREE.Vector3(data.x, data.y - 0.9, data.z), 0.5);
+      break;
+
+    // Opponent updates their score number → show intermission
+    case 'score':
+      theirScore = data.score;
+      document.getElementById('theirScore').textContent = theirScore;
+      showIntermission(); // pause on the defender’s side too
+      break;
+
+    case 'animation':
+      if (remoteActions[data.animation]) {
+        playAnimation(remoteActions, data.animation, data.lock || false);
+      }
+      break;
+  }
 });
 
 function makeNameTag(text) {
@@ -191,11 +458,13 @@ scene.add(cameraHolder);
 const ballHolder = new THREE.Object3D();
 cameraHolder.add(ballHolder);
 
+// Floor (smaller + centered to our half-court)
 const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(28, 15), // NBA half-court size-ish
-  new THREE.MeshStandardMaterial({ color: 0xdeb887 }) // wood color
+  new THREE.PlaneGeometry(COURT_WIDTH, COURT_DEPTH),
+  new THREE.MeshStandardMaterial({ color: 0xdeb887 })
 );
 floor.rotation.x = -Math.PI / 2;
+floor.position.z = FLOOR_CENTER_Z;   // slide floor so hoop is near the back
 scene.add(floor);
 
 const localPlayer = new THREE.Object3D();
@@ -318,112 +587,78 @@ scene.add(light);
 const ambient = new THREE.AmbientLight(0x404040);
 scene.add(ambient);
 
-// 🏀 Hoop Parts
+// Backboard (relative to HOOP_POS/BACKBOARD_Z)
 const backboard = new THREE.Mesh(
-  new THREE.BoxGeometry(1.8, 1, 0.1),
+  new THREE.BoxGeometry(1.8, 1.0, 0.1),
   new THREE.MeshStandardMaterial({ color: 0xffffff })
 );
-backboard.position.set(0, 3, -7);
+backboard.position.set(HOOP_POS.x, 3.0, BACKBOARD_Z);
 scene.add(backboard);
 
 const backboardCollider = new THREE.Box3().setFromCenterAndSize(
-  new THREE.Vector3(0, 3, myRole === "player1" ? -7 : 7),
-  new THREE.Vector3(1.8, 1, 0.3)
+  new THREE.Vector3(HOOP_POS.x, 3.0, BACKBOARD_Z),
+  new THREE.Vector3(1.8, 1.0, 0.3)
 );
 
+//rim
 const rim = new THREE.Mesh(
   new THREE.TorusGeometry(0.45, 0.05, 16, 100),
   new THREE.MeshStandardMaterial({ color: 0xff0000 })
 );
-rim.position.set(0, 2.6, -6.6);
+rim.position.set(HOOP_POS.x, HOOP_POS.y, HOOP_POS.z);
 rim.rotation.x = Math.PI / 2;
 scene.add(rim);
 
+// Pole (just behind backboard)
 const pole = new THREE.Mesh(
   new THREE.CylinderGeometry(0.1, 0.1, 3.5),
   new THREE.MeshStandardMaterial({ color: 0x333333 })
 );
-pole.position.set(0, 1.75, -7.5);
+pole.position.set(HOOP_POS.x, 1.75, BACKBOARD_Z - 0.5);
 scene.add(pole);
 
-// Second backboard
-const backboard2 = new THREE.Mesh(
-  new THREE.BoxGeometry(1.8, 1, 0.1),
-  new THREE.MeshStandardMaterial({ color: 0xffffff })
-);
-backboard2.position.set(0, 3, 7);
-scene.add(backboard2);
-
-const backboardCollider2 = new THREE.Box3().setFromCenterAndSize(
-  new THREE.Vector3(0, 3, myRole === "player1" ? -7 : 7),
-  new THREE.Vector3(1.8, 1, 0.3)
-);
-
-const rim2 = new THREE.Mesh(
-  new THREE.TorusGeometry(0.45, 0.05, 16, 100),
-  new THREE.MeshStandardMaterial({ color: 0xff0000 })
-);
-rim2.position.set(0, 2.6, 6.6);
-rim2.rotation.x = Math.PI / 2;
-scene.add(rim2);
-
+//net
 const netGeometry = new THREE.CylinderGeometry(0.45, 0.3, 0.4, 12, 1, true);
 const netMaterial = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  wireframe: true,
-  transparent: true,
-  opacity: 0.6,
+  color: 0xffffff, wireframe: true, transparent: true, opacity: 0.6,
 });
-
 const net = new THREE.Mesh(netGeometry, netMaterial);
-net.position.set(0, 2.3, -6.6);
+net.position.set(HOOP_POS.x, 2.3, HOOP_POS.z);
 scene.add(net);
 
-const net2 = net.clone();
-net2.position.set(0, 2.3, 6.6);
-scene.add(net2);
-
-const pole2 = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.1, 0.1, 3.5),
-  new THREE.MeshStandardMaterial({ color: 0x333333 })
-);
-pole2.position.set(0, 1.75, 7.5);
-scene.add(pole2);
 
 const fenceMaterial = new THREE.MeshStandardMaterial({ color: 0x666666, transparent: true, opacity: 0.6 });
-const fenceHeight = 3;
-const fenceThickness = 0.1;
 
 // Left fence
 const fenceLeft = new THREE.Mesh(
-  new THREE.BoxGeometry(fenceThickness, fenceHeight, 15),
+  new THREE.BoxGeometry(FENCE_THICK, FENCE_H, COURT_DEPTH),
   fenceMaterial
 );
-fenceLeft.position.set(-14, fenceHeight / 2, 0);
+fenceLeft.position.set(-COURT_HALF_X, FENCE_H/2, FLOOR_CENTER_Z);
 scene.add(fenceLeft);
 
 // Right fence
 const fenceRight = new THREE.Mesh(
-  new THREE.BoxGeometry(fenceThickness, fenceHeight, 15),
+  new THREE.BoxGeometry(FENCE_THICK, FENCE_H, COURT_DEPTH),
   fenceMaterial
 );
-fenceRight.position.set(14, fenceHeight / 2, 0);
+fenceRight.position.set( COURT_HALF_X, FENCE_H/2, FLOOR_CENTER_Z);
 scene.add(fenceRight);
 
-// Back fence
+// Back fence (behind hoop)
 const fenceBack = new THREE.Mesh(
-  new THREE.BoxGeometry(28, fenceHeight, fenceThickness),
+  new THREE.BoxGeometry(COURT_WIDTH, FENCE_H, FENCE_THICK),
   fenceMaterial
 );
-fenceBack.position.set(0, fenceHeight / 2, -7.5);
+fenceBack.position.set(0, FENCE_H/2, COURT_BACK_Z);
 scene.add(fenceBack);
 
-// Front fence
+// Front fence (near center court)
 const fenceFront = new THREE.Mesh(
-  new THREE.BoxGeometry(28, fenceHeight, fenceThickness),
+  new THREE.BoxGeometry(COURT_WIDTH, FENCE_H, FENCE_THICK),
   fenceMaterial
 );
-fenceFront.position.set(0, fenceHeight / 2, 7.5);
+fenceFront.position.set(0, FENCE_H/2, COURT_FRONT_Z);
 scene.add(fenceFront);
 
 // Basketball
@@ -493,9 +728,7 @@ document.addEventListener('mousedown', (e) => {
   if (holdingBall && e.button === 0) {
     socket.send(JSON.stringify({ type:'releaseBall' }));
 
-    const hoopPos = myRole === "player1"
-      ? new THREE.Vector3(0, 2.6, 6.6)
-      : new THREE.Vector3(0, 2.6, -6.6);
+    const hoopPos = HOOP_POS; // always the single hoop
 
     const distToHoop = cameraHolder.position.distanceTo(hoopPos);
     const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
@@ -532,6 +765,20 @@ document.addEventListener('mousedown', (e) => {
         preparingDunk = false;
         dunkParams = null;
         shootingJumpStart = null;
+        ballVelocity.copy(dunkParams.dir).multiplyScalar(dunkParams.power);
+        preparingDunk = false;
+        dunkParams = null;
+        shootingJumpStart = null;
+
+        // SEND FIRST IN-AIR SNAPSHOT (server will accept from last shooter)
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            type: 'ball',
+            x: ball.position.x, y: ball.position.y, z: ball.position.z,
+            vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
+            held: false
+          }));
+        }
       }, dunkDelay);
     } else {
       if (!localActions["6"]) {
@@ -556,6 +803,20 @@ document.addEventListener('mousedown', (e) => {
         preparingShot = false;
         shootParams = null;
         shootingJumpStart = null;
+        ballVelocity.copy(shootParams.dir).multiplyScalar(shootParams.power);
+        preparingShot = false;
+        shootParams = null;
+        shootingJumpStart = null;
+
+        // SEND FIRST IN-AIR SNAPSHOT
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            type: 'ball',
+            x: ball.position.x, y: ball.position.y, z: ball.position.z,
+            vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
+            held: false
+          }));
+        }
       }, shootDelay);
     }
   }
@@ -574,10 +835,8 @@ document.addEventListener('keyup', (e) => {
 // Animation Loop
 function animate() {
   requestAnimationFrame(animate);
-
   direction.set(0, 0, 0);
-
-  if (!animationLocked) {
+  if (!intermission && !animationLocked) {
     if (moveForward) direction.z -= 1;
     if (moveBackward) direction.z += 1;
     if (moveLeft) direction.x -= 1;
@@ -625,10 +884,17 @@ function animate() {
     }
   }
 
-  cameraHolder.position.x = Math.max(-13.9, Math.min(13.9, cameraHolder.position.x));
-  cameraHolder.position.z = Math.max(-7.4, Math.min(7.4, cameraHolder.position.z));
+  const CLAMP_X_MIN = -COURT_HALF_X + 0.1;
+  const CLAMP_X_MAX =  COURT_HALF_X - 0.1;
+  const CLAMP_Z_MIN =  COURT_BACK_Z + 0.1;
+  const CLAMP_Z_MAX =  COURT_FRONT_Z - 0.1;
+
+  // clamp camera & pawn
+  cameraHolder.position.x = Math.max(CLAMP_X_MIN, Math.min(CLAMP_X_MAX, cameraHolder.position.x));
+  cameraHolder.position.z = Math.max(CLAMP_Z_MIN, Math.min(CLAMP_Z_MAX, cameraHolder.position.z));
   localPlayer.position.x = cameraHolder.position.x;
   localPlayer.position.z = cameraHolder.position.z;
+
 
   const leftHandBone = localAvatar?.getObjectByName("LeftHand");
 
@@ -662,85 +928,77 @@ function animate() {
     const holdOffset = new THREE.Vector3(0, -0.3, -0.8);
     ball.position.copy(ballHolder.localToWorld(holdOffset));
   } else {
-    ballVelocity.y -= 0.01;
+    if (!intermission) {
+      // NOT holding: either the server is simming, or we do a lightweight local sim
+      if (!serverSimActive) {
+        // --- your existing local physics integration START ---
+        ballVelocity.y -= 0.01;
 
-    const rim1Pos = new THREE.Vector3(0, 2.6, -6.6);
-    if (ball.position.distanceTo(rim1Pos) < 0.5) {
-      const push = ball.position.clone().sub(rim1Pos).normalize().multiplyScalar(0.05);
-      ballVelocity.add(push);
-    }
+        const rimPos = HOOP_POS;
+        if (ball.position.distanceTo(rimPos) < 0.5) {
+          const push = ball.position.clone().sub(rimPos).normalize().multiplyScalar(0.05);
+          ballVelocity.add(push);
+        }
 
-    if (Math.abs(ball.position.x) < 0.9 && Math.abs(ball.position.y - 3) < 0.5 && Math.abs(ball.position.z + 7) < 0.1) {
-      ballVelocity.z *= -0.5;
-    }
+        if (Math.abs(ball.position.x) < 0.9 && Math.abs(ball.position.y - 3) < 0.5 && Math.abs(ball.position.z + 7) < 0.1) {
+          ballVelocity.z *= -0.5;
+        }
 
-    const rim2Pos = new THREE.Vector3(0, 2.6, 6.6);
-    if (ball.position.distanceTo(rim2Pos) < 0.5) {
-      const push = ball.position.clone().sub(rim2Pos).normalize().multiplyScalar(0.05);
-      ballVelocity.add(push);
-    }
+        ball.position.add(ballVelocity);
 
-    if (Math.abs(ball.position.x) < 0.9 && Math.abs(ball.position.y - 3) < 0.5 && Math.abs(ball.position.z - 7) < 0.1) {
-      ballVelocity.z *= -0.5;
-    }
+        // Simple backboard bounce using the collider (already relative to BACKBOARD_Z)
+        if (backboardCollider.containsPoint(ball.position)) {
+          ballVelocity.z *= -0.5;
+          // nudge outward from board
+          if (ball.position.z > BACKBOARD_Z) ball.position.z += 0.1; else ball.position.z -= 0.1;
+        }
 
-    ball.position.add(ballVelocity);
+        // clamp ball
+        ball.position.x = Math.max(CLAMP_X_MIN, Math.min(CLAMP_X_MAX, ball.position.x));
+        ball.position.z = Math.max(CLAMP_Z_MIN, Math.min(CLAMP_Z_MAX, ball.position.z));
 
-    if (backboardCollider.containsPoint(ball.position)) {
-      ballVelocity.z *= -0.5;
-      ball.position.z += 0.1;
-    }
+        if (ball.position.y < 0.25) {
+          ball.position.y = 0.25;
+          if (ballVelocity.y < 0) ballVelocity.y *= -0.5;
+          ballVelocity.multiplyScalar(0.8);
+        }
+        // --- your existing local physics integration END ---
+      }
+    
+      const scoreZone = HOOP_POS;
+      const scored = !holdingBall &&
+               ball.position.distanceTo(scoreZone) < 0.55 &&
+               ball.position.y < 2.8;
 
-    if (backboardCollider2.containsPoint(ball.position)) {
-      ballVelocity.z *= -0.5;
-      ball.position.z += 0.1;
-    }
 
-    ball.position.x = Math.max(-13.9, Math.min(13.9, ball.position.x));
-    ball.position.z = Math.max(-7.4, Math.min(7.4, ball.position.z));
+      if (scored) {
+        myScore++;
+        document.getElementById("myScore").textContent = myScore;
 
-    if (ball.position.y < 0.25) {
-      ball.position.y = 0.25;
-      if (ballVelocity.y < 0) ballVelocity.y *= -0.5;
-      ballVelocity.multiplyScalar(0.8);
-    }
+        // Tell server (it will reset, swap offense/defense, and assign ball)
+        socket.send(JSON.stringify({ type: "score", score: myScore }));
 
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: 'position',
-        x: cameraHolder.position.x,
-        y: cameraHolder.position.y,
-        z: cameraHolder.position.z
-      }));
-
-      if (myRole === currentBallOwner) {
-        socket.send(JSON.stringify({
-          type: 'ball',
-          x: ball.position.x, y: ball.position.y, z: ball.position.z,
-          vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
-          held: holdingBall
-        }));
+        // Pause & show scoreboard locally too
+        showIntermission();
       }
     }
+  }
 
+  if (!intermission && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      type: 'position',
+      x: cameraHolder.position.x,
+      y: cameraHolder.position.y,
+      z: cameraHolder.position.z
+    }));
 
-    const hoopZ = myRole === "player1" ? 6.6 : -6.6;
-    const scoreZone = new THREE.Vector3(0, 2.6, hoopZ);
-    const scored =
-      !holdingBall &&
-      ball.position.distanceTo(scoreZone) < 0.55 &&
-      ball.position.y < 2.8;
-
-    if (!holdingBall && scored) {
-      myScore++;
-      document.getElementById("myScore").textContent = myScore;
-
-      ball.position.set(0, 0.25, 0);
-      ballVelocity.set(0, 0, 0);
-      holdingBall = false;
-
-      socket.send(JSON.stringify({ type: "score", score: myScore }));
-    }
+    // Always send; server filters (holder or last shooter). Paused → we skip anyway.
+    socket.send(JSON.stringify({
+      type: 'ball',
+      x: ball.position.x, y: ball.position.y, z: ball.position.z,
+      vx: ballVelocity.x, vy: ballVelocity.y, vz: ballVelocity.z,
+      held: holdingBall
+    }));
   }
 
   remoteNameTag.lookAt(camera.position);
