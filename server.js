@@ -21,6 +21,9 @@ function makeRoom(id, name) {
     maxPlayers: 2,
     players: [],
 
+    private: false,
+    passwordHash: null,
+
     // Ball state (authoritative on server)
     ball: { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false },
     ballOwnerRole: null,          // 'player1' | 'player2' | null
@@ -36,19 +39,22 @@ function makeRoom(id, name) {
     defenseRole: null,
 
     // Coin flip state
-    coin: { pending:false, callerRole:null, call:null, timer:null },
+    coin: { pending:false, callerRole:null, call:null, timer:null }
   };
 }
 
 let nextRoomId = 1;
 
 function summarizeRooms() {
-  return [...rooms.values()].map(r => ({
-    id: r.id,
-    name: r.name,
-    count: r.players.length,
-    max: r.maxPlayers
-  }));
+  return [...rooms.values()]
+    .filter(r => r.players.length < r.maxPlayers)      // Hides 2/2 rooms
+    .map(r => ({
+      id: r.id,
+      name: r.name,
+      count: r.players.length,
+      max: r.maxPlayers,
+      private: !!r.private
+    }));
 }
 
 function broadcastToLobby() {
@@ -74,15 +80,23 @@ function deleteRoomIfEmpty(room) {
   }
 }
 
-function joinRoom(ws, roomId) {
+function joinRoom(ws, roomId, password = null) {
   const room = rooms.get(roomId);
-  if (!room) {
-    ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
-    return;
-  }
-  if (room.players.length >= room.maxPlayers) {
-    ws.send(JSON.stringify({ type: 'error', message: 'Room full' }));
-    return;
+  if (!room) { ws.send(JSON.stringify({ type:'error', message:'Room not found' })); return; }
+  if (room.players.length >= room.maxPlayers) { ws.send(JSON.stringify({ type:'error', message:'Room full' })); return; }
+
+  // NEW: private check
+  if (room.private) {
+    const provided = String(password ?? '').trim();
+    if (!provided) {
+      ws.send(JSON.stringify({ type:'error', message:'Password required' }));
+      return;
+    }
+    const hash = crypto.createHash('sha256').update(provided).digest('hex');
+    if (hash !== room.passwordHash) {
+      ws.send(JSON.stringify({ type:'error', message:'Incorrect password' }));
+      return;
+    }
   }
 
   const playerId = room.players.length + 1;
@@ -232,18 +246,31 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // createRoom
     if (data.type === 'createRoom') {
       const name = (data.name || `Room ${nextRoomId}`).slice(0, 40);
       const id = `room${nextRoomId++}`;
       const room = makeRoom(id, name);
+
+      // NEW:
+      room.private = !!data.private;
+      if (room.private) {
+        const pw = String(data.password || '').trim();
+        if (!pw) {
+          ws.send(JSON.stringify({ type:'error', message:'Password required for private rooms' }));
+          return;
+        }
+        room.passwordHash = crypto.createHash('sha256').update(pw).digest('hex');
+      }
+
       rooms.set(id, room);
       broadcastToLobby();
-      if (data.autoJoin) joinRoom(ws, id);
+      if (data.autoJoin) joinRoom(ws, id, data.password || null);
       return;
     }
 
     if (data.type === 'joinRoom') {
-      return joinRoom(ws, data.roomId);
+      return joinRoom(ws, data.roomId, data.password || null);   // pass password through
     }
 
     if (data.type === 'leaveRoom') {
