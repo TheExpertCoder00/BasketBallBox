@@ -485,6 +485,7 @@ socket.addEventListener('message', (e) => {
       if (myRole === 'player1') cameraHolder.position.set(-5, 1.6, 5);
       else                      cameraHolder.position.set( 5, 1.6,-5);
       lobbyEl.style.display = 'none';
+      setUIState('game');
       document.getElementById('loadingScreen').style.display = 'flex';
       socket.send(JSON.stringify({ type: 'ready', role: myRole }));
       break;
@@ -601,6 +602,18 @@ const renderer = new THREE.WebGLRenderer();
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
+
+const canvas = renderer.domElement;
+
+let uiState = 'lobby'; // 'lobby' | 'game'
+function setUIState(state) {
+  uiState = state;
+  canvas.style.pointerEvents = (uiState === 'game') ? 'auto' : 'none';
+  if (uiState !== 'game' && document.pointerLockElement) {
+    document.exitPointerLock();
+  }
+}
+setUIState('lobby');
 
 const cameraHolder = new THREE.Object3D();
 cameraHolder.add(camera);
@@ -819,9 +832,10 @@ const ball = new THREE.Mesh(ballGeometry, ballMaterial);
 ball.position.set(0, 0.25, 0);
 scene.add(ball);
 
-// Pointer Lock Setup
-document.body.addEventListener('click', () => {
-  document.body.requestPointerLock();
+canvas.addEventListener('click', () => {
+  if (uiState !== 'game') return;           // no lock in menus/lobby
+  if (document.pointerLockElement === canvas) return;
+  canvas.requestPointerLock();
 });
 
 let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
@@ -1159,4 +1173,3 @@ function animate() {
   if (remoteMixer) remoteMixer.update(delta);
 }
 animate();
-
