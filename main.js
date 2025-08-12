@@ -37,6 +37,12 @@ const OFF_Z = HOOP_POS.z + 8;  // offense out front with ball
 const DEFENDER_SPAWN = new THREE.Vector3(HOOP_POS.x, 1.6, DEF_Z);
 const OFFENSE_SPAWN  = new THREE.Vector3(HOOP_POS.x, 1.6, OFF_Z);
 
+const modeCasualBtn = document.getElementById('modeCasual');
+const modeCompetitiveBtn = document.getElementById('modeCompetitive');
+const modeTip = document.getElementById('modeTip');
+
+let selectedMode = 'casual';   // 'casual' | 'competitive'
+let isLoggedIn = false;        // placeholder; wire this when auth lands
 
 
 function applySpawnForRoles(offenseRole) {
@@ -75,6 +81,16 @@ function applySpawnForRoles(offenseRole) {
   }
 }
 
+function setMode(mode) {
+  selectedMode = (mode === 'competitive') ? 'competitive' : 'casual';
+  modeCasualBtn.classList.toggle('is-active', selectedMode === 'casual');
+  modeCompetitiveBtn.classList.toggle('is-active', selectedMode === 'competitive');
+  modeTip.textContent = (selectedMode === 'competitive') ? 'Competitive requires login (coming soon)' : '';
+  try { socket.send(JSON.stringify({ type:'listRooms' })); } catch {}
+}
+modeCasualBtn.onclick = () => setMode('casual');
+modeCompetitiveBtn.onclick = () => setMode('competitive');
+setMode('casual');
 
 let isRemotePlayerReady = false;
 let isLocalPlayerReady = true; // assume this tab is ready
@@ -278,7 +294,7 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
-const socket = new WebSocket("wss://basketballbox.onrender.com");
+const socket = new WebSocket("ws://localhost:8080");
 
 
 let myScore = 0;
@@ -319,6 +335,8 @@ const tabPrivate = document.getElementById('tabPrivate');
 
 // Tabs behavior
 function setTab(tab) {
+  tabPublic.classList.toggle('is-active', tab === 'public');
+  tabPrivate.classList.toggle('is-active', tab === 'private');
   if (tab === 'public') {
     publicListEl.style.display = '';
     privateListEl.style.display = 'none';
@@ -348,24 +366,46 @@ function renderList(targetEl, list, isPrivate) {
   }
   targetEl.innerHTML = list.map(r => `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-bottom:1px solid #222;">
-      <div><b>${r.name}</b> — ${r.count}/${r.max}${isPrivate ? ' 🔒' : ''}</div>
-      <button data-room="${r.id}" style="cursor:pointer; padding:6px 10px; border-radius:8px; border:0;">Join</button>
+      <div>
+        <b>${r.name}</b> — ${r.count}/${r.max}${isPrivate ? ' 🔒' : ''}
+        ${r.mode === 'competitive' ? ' <span style="font-size:12px;opacity:.8;">(Competitive)</span>' : ''}
+      </div>
+      <button
+        data-room="${r.id}"
+        data-name="${r.name}"
+        data-mode="${r.mode || 'casual'}"
+        style="cursor:pointer; padding:6px 10px; border-radius:8px; border:0;">
+        Join
+      </button>
     </div>
   `).join('');
   [...targetEl.querySelectorAll('button[data-room]')].forEach(btn => {
     btn.onclick = () => {
+      const mode = btn.dataset.mode || 'casual';
+      const roomId = btn.dataset.room;
+      const roomName = btn.dataset.name || '';
       if (isPrivate) {
-        openPwModal(btn.dataset.room, btn.dataset.name);
+        if (mode === 'competitive' && !isLoggedIn) {
+          alert('Please sign in to join Competitive rooms (coming soon).');
+          return;
+        }
+        openPwModal(roomId, roomName);
       } else {
-        socket.send(JSON.stringify({ type:'joinRoom', roomId: btn.dataset.room }));
+        if (mode === 'competitive' && !isLoggedIn) {
+          alert('Please sign in to join Competitive rooms (coming soon).');
+          return;
+        }
+        socket.send(JSON.stringify({ type:'joinRoom', roomId }));
       }
     };
   });
 }
 
 function renderRooms(rooms) {
-  const pub = rooms.filter(r => !r.private);
-  const pri = rooms.filter(r =>  r.private);
+  // Filter by selected mode (server includes r.mode in summaries)
+  const byMode = (r) => (r.mode || 'casual') === selectedMode;
+  const pub = rooms.filter(r => !r.private).filter(byMode);
+  const pri = rooms.filter(r =>  r.private).filter(byMode);
   renderList(publicListEl, pub, false);
   renderList(privateListEl, pri, true);
 }
@@ -396,6 +436,11 @@ createRoomBtn.onclick = () => {
   const name = newRoomNameInput.value.trim() || 'My Room';
   const isPriv = isPrivateChk.checked;
   const pw = roomPasswordInput.value;
+  const mode = selectedMode;
+  if (mode === 'competitive' && !isLoggedIn) {
+    alert('Please sign in to create a Competitive match (coming soon).');
+    return;
+  }
   if (isPriv && !pw) {
     alert('Please set a password for private rooms.');
     return;
@@ -405,7 +450,8 @@ createRoomBtn.onclick = () => {
     name,
     autoJoin:true,
     private: isPriv,
-    password: isPriv ? pw : undefined
+    password: isPriv ? pw : undefined,
+    mode
   }));
 };
 
