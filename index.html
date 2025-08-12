@@ -28,16 +28,20 @@
       <div style="width:min(720px, 92%);">
         <h2 style="margin:0 0 12px">🏀 BasketballBox — Join a Room</h2>
 
+        <!-- Mode selector -->
+        <div class="toolbar">
+          <span class="label">Mode:</span>
+          <div class="segmented">
+            <button id="modeCasual" class="seg-btn is-active">Casual</button>
+            <button id="modeCompetitive" class="seg-btn">Competitive</button>
+          </div>
+          <span id="modeTip" class="hint"></span>
+        </div>
+
         <!-- Tabs -->
-        <div style="display:flex; gap:8px; margin-bottom:8px;">
-          <button id="tabPublic" class="tab active"
-            style="padding:8px 12px;border-radius:10px;border:1px solid #333;background:#1a1a1a;color:#fff;cursor:pointer">
-            Public
-          </button>
-          <button id="tabPrivate" class="tab"
-            style="padding:8px 12px;border-radius:10px;border:1px solid #333;background:#111;color:#aaa;cursor:pointer">
-            Private
-          </button>
+        <div class="segmented" style="margin: 10px 0 8px 0;">
+          <button id="tabPublic" class="seg-btn is-active">Public</button>
+          <button id="tabPrivate" class="seg-btn">Private</button>
         </div>
 
         <div id="roomList" style="background:#111; border-radius:12px; padding:12px; max-height:40vh; overflow:auto; margin-bottom:12px;">
@@ -46,14 +50,15 @@
         </div>
 
         <!-- Create -->
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <input id="newRoomName" placeholder="Room name" style="flex:1; min-width:180px; padding:10px; border-radius:8px; border:0;">
-          <label style="display:flex; gap:6px; align-items:center; background:#121212; padding:8px 10px; border-radius:8px; border:1px solid #222;">
-            <input type="checkbox" id="isPrivateChk"> Private
+        <div class="create-row">
+          <input id="newRoomName" class="input" placeholder="Room name">
+          <label class="check">
+            <input type="checkbox" id="isPrivateChk"> <span>Private</span>
           </label>
-          <input id="roomPassword" placeholder="Password" style="flex:0.8; min-width:160px; padding:10px; border-radius:8px; border:0; display:none;">
-          <button id="createRoomBtn" style="padding:10px 14px; border-radius:8px; border:0; cursor:pointer;">Create & Join</button>
+          <input id="roomPassword" class="input" placeholder="Password" style="display:none;">
+          <button id="createRoomBtn" class="btn btn-primary">Create & Join</button>
         </div>
+
       </div>
       <!-- Password Modal -->
       <div id="pwModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
