@@ -15,9 +15,9 @@ server.on('connection', (socket) => socket.setNoDelay(true));
 // ----------------- Room / Lobby -----------------
 const rooms = new Map();
 
-function makeRoom(id, name) {
+function makeRoom(id, name, mode = 'casual') {
   return {
-    id, name,
+    id, name, mode,
     maxPlayers: 2,
     players: [],
 
@@ -53,7 +53,8 @@ function summarizeRooms() {
       name: r.name,
       count: r.players.length,
       max: r.maxPlayers,
-      private: !!r.private
+      private: !!r.private,
+      mode: r.mode || 'casual'
     }));
 }
 
@@ -84,7 +85,10 @@ function joinRoom(ws, roomId, password = null) {
   const room = rooms.get(roomId);
   if (!room) { ws.send(JSON.stringify({ type:'error', message:'Room not found' })); return; }
   if (room.players.length >= room.maxPlayers) { ws.send(JSON.stringify({ type:'error', message:'Room full' })); return; }
-
+  if (room.mode === 'competitive' && !ws._authed) {
+    ws.send(JSON.stringify({ type:'error', message:'Login required to join Competitive.' }));
+    return;
+  }
   // NEW: private check
   if (room.private) {
     const provided = String(password ?? '').trim();
@@ -250,7 +254,13 @@ wss.on('connection', (ws) => {
     if (data.type === 'createRoom') {
       const name = (data.name || `Room ${nextRoomId}`).slice(0, 40);
       const id = `room${nextRoomId++}`;
-      const room = makeRoom(id, name);
+      const requestedMode = (data.mode === 'competitive') ? 'competitive' : 'casual';
+      // Gate competitive until auth exists
+      if (requestedMode === 'competitive' && !ws._authed) {
+        ws.send(JSON.stringify({ type:'error', message:'Login required to create a Competitive match.' }));
+        return;
+      }
+      const room = makeRoom(id, name, requestedMode);
 
       // NEW:
       room.private = !!data.private;
