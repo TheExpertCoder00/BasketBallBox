@@ -48,7 +48,6 @@
           <div id="publicRooms"></div>
           <div id="privateRooms" style="display:none"></div>
         </div>
-
         <!-- Create -->
         <div class="create-row">
           <input id="newRoomName" class="input" placeholder="Room name">
@@ -56,6 +55,16 @@
             <input type="checkbox" id="isPrivateChk"> <span>Private</span>
           </label>
           <input id="roomPassword" class="input" placeholder="Password" style="display:none;">
+          <!-- Play to -->
+          <div class="toolbar" style="margin: 8px 0 10px 0;">
+            <span class="label">Play to:</span>
+            <div class="segmented" id="toWinGroup">
+              <button class="seg-btn" data-to="5">5</button>
+              <button class="seg-btn" data-to="7">7</button>
+              <button class="seg-btn is-active" data-to="11">11</button>
+              <button class="seg-btn" data-to="21">21</button>
+            </div>
+          </div>
           <button id="createRoomBtn" class="btn btn-primary">Create & Join</button>
         </div>
 
@@ -75,7 +84,17 @@
         </div>
       </div> 
     </div>
-
+    <!-- Game Over Modal -->
+    <div id="gameOverModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
+      align-items:center; justify-content:center; z-index:10001;">
+      <div style="background:#111; border:1px solid #222; border-radius:12px; padding:16px; width:min(420px, 92%); color:#fff; text-align:center;">
+        <div id="gameOverTitle" style="font-size:22px; font-weight:800; margin-bottom:8px;">You Won!</div>
+        <div id="gameOverSub" style="opacity:.9; margin-bottom:14px;">Final score 11–7</div>
+        <button id="gameOverBack" style="padding:10px 14px; border-radius:10px; border:0; background:#3a86ff; color:#fff; cursor:pointer;">
+          Back to lobby
+        </button>
+      </div>
+    </div>
     <div id="scoreboard">
     You: <span id="myScore">0</span> &nbsp;&nbsp; Opponent: <span id="theirScore">0</span>
     </div>
