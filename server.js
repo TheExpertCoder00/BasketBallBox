@@ -24,6 +24,9 @@ function makeRoom(id, name, mode = 'casual') {
     private: false,
     passwordHash: null,
 
+    toWin: 11,
+    scores: { player1:0, player2:0 },
+
     // Ball state (authoritative on server)
     ball: { x:0, y:0.25, z:0, vx:0, vy:0, vz:0, held:false },
     ballOwnerRole: null,          // 'player1' | 'player2' | null
@@ -47,16 +50,18 @@ let nextRoomId = 1;
 
 function summarizeRooms() {
   return [...rooms.values()]
-    .filter(r => r.players.length < r.maxPlayers)      // Hides 2/2 rooms
+    .filter(r => r.players.length < r.maxPlayers)
     .map(r => ({
       id: r.id,
       name: r.name,
       count: r.players.length,
       max: r.maxPlayers,
       private: !!r.private,
-      mode: r.mode || 'casual'
+      mode: r.mode || 'casual',
+      toWin: r.toWin || 11
     }));
 }
+
 
 function broadcastToLobby() {
   for (const client of wss.clients) {
@@ -111,7 +116,7 @@ function joinRoom(ws, roomId, password = null) {
   ws._roomId = room.id;
   ws._role = role;
 
-  ws.send(JSON.stringify({ type: 'joinedRoom', roomId: room.id, role }));
+  ws.send(JSON.stringify({ type: 'joinedRoom', roomId: room.id, role, toWin: room.toWin }));
   broadcastToLobby();
 }
 
@@ -262,6 +267,9 @@ wss.on('connection', (ws) => {
       }
       const room = makeRoom(id, name, requestedMode);
 
+      const allowed = new Set([5,7,11,21]);
+      const requestedTo = Number(data.toWin);
+      room.toWin = allowed.has(requestedTo) ? requestedTo : 11;
       // NEW:
       room.private = !!data.private;
       if (room.private) {
@@ -367,14 +375,42 @@ wss.on('connection', (ws) => {
     }
 
     if (data.type === 'score') {
-      // Let the other client update their scoreboard number
-      broadcastRoom(room, { type: 'score', score: data.score }, ws);
+      // Increment authoritative server score for the scorer
+      room.scores = room.scores || { player1:0, player2:0 };
+      room.scores[ws._role]++;
 
-      // Stop any in-air sim and clear shooter tag
+      // Tell opponent the scorer’s updated number (authoritative)
+      broadcastRoom(room, {
+        type: 'score',
+        role: ws._role,
+        score: room.scores[ws._role],
+        scores: room.scores
+      }, ws);
+
+      // Winner?
+      if (room.scores[ws._role] >= room.toWin) {
+        // Stop any sim / clear shooter, clear ownership
+        stopBallSim(room);
+        room.lastShooterRole = null;
+        room.ballOwnerRole = null;
+        room.ball.held = false;
+
+        // Announce game over to both
+        broadcastRoom(room, {
+          type: 'gameOver',
+          winner: ws._role,           // 'player1' or 'player2'
+          scores: room.scores,
+          toWin: room.toWin
+        });
+
+        return; // do NOT continue to possession swap after game end
+      }
+
+      // Not over yet: do your existing reset & possession swap
       stopBallSim(room);
       room.lastShooterRole = null;
 
-      // Reset ball to center on the floor (authoritative)
+      // Reset ball to center
       room.ball.x = 0; room.ball.y = 0.25; room.ball.z = 0;
       room.ball.vx = 0; room.ball.vy = 0; room.ball.vz = 0;
 
@@ -389,16 +425,16 @@ wss.on('connection', (ws) => {
       room.ball.held = false;
       sendBall(room);
 
-      // Announce roles and hand the ball to new offense
+      // Announce roles and then hand ball to new offense
       broadcastRoom(room, { type: 'roles', offense: nextOffense, defense: nextDefense });
       room.ballOwnerRole = nextOffense;
       room.ball.held = true;
       broadcastRoom(room, { type: 'ballOwner', role: nextOffense, held: true });
 
-      // (Optional) echo stamped ball after assigning owner so seq keeps moving
       sendBall(room);
       return;
     }
+
 
     if (['position','animation'].includes(data.type)) {
       broadcastRoom(room, data, ws);
