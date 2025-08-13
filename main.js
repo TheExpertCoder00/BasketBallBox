@@ -307,6 +307,10 @@ let shootParams = null;
 let preparingDunk = false;
 let dunkParams = null;
 
+let blockJumpStart = null;
+const blockJumpDuration = 420; // ms, tweak-able
+
+
 let dribbling = false;
 let dribbleStartTime = 0;
 
@@ -490,6 +494,14 @@ socket.addEventListener('message', (e) => {
         alert(data.message || 'Something went wrong.');
       }
       break;
+        
+    // If you kept the lightweight 'possession' message from earlier, keep it for UI:
+    case 'possession': {
+      lastRoles.offense = data.offense;
+      lastRoles.defense = data.defense;
+      showRoles(data.offense, data.defense); // UI only; no spawn snap
+      break;
+    }
 
     case 'rooms':
       renderRooms(data.rooms);
@@ -543,16 +555,23 @@ socket.addEventListener('message', (e) => {
       break;
 
 
-    // server sim flag
-    case 'ballSim':
-      serverSimActive = !!data.active;
+    case 'ballSim': {
+      // When the ball is in the air, nobody is offense (for animation purposes)
+      if (data.active) {
+        possessionRole = null;
+        if (myRole !== possessionRole) holdingBall = false;
+      }
       break;
+    }
 
-    // ownership
-    case 'ballOwner':
-      currentBallOwner = data.role; // 'player1' | 'player2' | null
-      holdingBall = (myRole === currentBallOwner && data.held === true);
+
+    case 'ballOwner': {
+      // Server tells who has the ball and whether it's in-hand
+      possessionRole = data.held ? data.role : null;
+      holdingBall = data.held && (data.role === myRole);
+      // (optional) update any UI label that says "Offense"/"Defense"
       break;
+    }
 
     // stamped authoritative ball
     case 'ball':
@@ -701,6 +720,9 @@ const loader = new GLTFLoader();
 let localCurrentAction = null;
 let remoteCurrentAction = null;
 let animationLocked = false;
+
+// Who currently owns the ball, per server ("player1" | "player2" | null)
+let possessionRole = null;
 
 function playAnimation(actions, name, lock = false) {
   if (!actions[name]) {
@@ -901,6 +923,28 @@ const velocity = new THREE.Vector3();
 const direction = new THREE.Vector3();
 let yaw = 0, pitch = 0;
 
+// --- Simple player collider ---
+const PLAYER_RADIUS = 0.6; // tweak to taste (shoulders-ish)
+
+function resolvePlayerCollision() {
+  // Collide in XZ plane vs the other player
+  const dx = cameraHolder.position.x - remotePlayer.position.x;
+  const dz = cameraHolder.position.z - remotePlayer.position.z;
+  const dist = Math.hypot(dx, dz);
+  const minDist = PLAYER_RADIUS * 2;
+
+  if (dist > 0 && dist < minDist) {
+    const push = (minDist - dist);
+    const nx = dx / dist, nz = dz / dist; // normal
+    cameraHolder.position.x += nx * push;
+    cameraHolder.position.z += nz * push;
+    // keep pawn aligned
+    localPlayer.position.x = cameraHolder.position.x;
+    localPlayer.position.z = cameraHolder.position.z;
+  }
+}
+
+
 document.addEventListener('keydown', (e) => {
   if (animationLocked) return;
 
@@ -1043,7 +1087,13 @@ document.addEventListener('mousedown', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') shiftHeld = true;
   if (e.code === 'KeyQ') qPressed = true;
-  if (e.code === 'KeyF') fPressed = true;
+  if (e.code === 'KeyF') {
+    fPressed = true; // keeps your block animation trigger
+    const iAmDefense = (myRole === lastRoles.defense);
+    if (iAmDefense && blockJumpStart === null) {
+      blockJumpStart = performance.now();
+    }
+  }
 });
 
 document.addEventListener('keyup', (e) => {
@@ -1068,37 +1118,65 @@ function animate() {
   localPlayer.position.copy(cameraHolder.position);
   localPlayer.position.y -= 0.9;
 
+  resolvePlayerCollision();
+
+  // --- Jump arcs (shooting OR defensive block) ---
+  let jumpY = 0;
+
   if (shootingJumpStart !== null) {
     const t = performance.now() - shootingJumpStart;
     const progress = Math.min(t / shootingJumpDuration, 1);
-
-    const jumpHeight = 0.5 * Math.sin(progress * Math.PI);
-    cameraHolder.position.y = 1.6 + jumpHeight;
-    localPlayer.position.y = 0.7 + jumpHeight;
-  } else {
-    cameraHolder.position.y = 1.6;
-    localPlayer.position.y = 0.7;
+    jumpY = 0.5 * Math.sin(progress * Math.PI);
+    if (progress >= 1) shootingJumpStart = null;
+  } else if (blockJumpStart !== null) {
+    const t = performance.now() - blockJumpStart;
+    const progress = Math.min(t / blockJumpDuration, 1);
+    jumpY = 0.45 * Math.sin(progress * Math.PI); // small springy hop
+    if (progress >= 1) blockJumpStart = null;
   }
 
+  cameraHolder.position.y = 1.6 + jumpY;
+  localPlayer.position.y  = 0.7 + jumpY;
+
+  // --- Role-aware animation selection ---
   if (!animationLocked) {
-    if (fPressed) {
-      playAnimation(localActions, "2"); // Block
-      fPressed = false;
-    } else if (qPressed) {
-      playAnimation(localActions, "3"); // Crossover
-      qPressed = false;
-    } else if (shiftHeld) {
-      playAnimation(localActions, "4"); // Defense shuffle
-    } else if (holdingBall && (moveForward || moveBackward || moveLeft || moveRight)) {
-      if (!dribbling) {
-        dribbling = true;
-        dribbleStartTime = performance.now();
+    // I am offense if I currently possess the ball (server truth or local optimism)
+    const iAmOffense = (possessionRole === myRole) || holdingBall;
+    const moving = (moveForward || moveBackward || moveLeft || moveRight);
+
+    if (!iAmOffense) {
+      // DEFENSE GROUP
+      if (fPressed) {
+        // Block Shot (index 2)
+        playAnimation(localActions, "2");
+        fPressed = false;
+      } else if (moving) {
+        // Defense Active / shuffle (index 4)
+        playAnimation(localActions, "4");
+      } else {
+        // Idle (shared, index 1)
+        playAnimation(localActions, "1");
       }
-      playAnimation(localActions, "5"); // Left Dribble
-    } else if (moveForward || moveBackward || moveLeft || moveRight) {
-      playAnimation(localActions, "7"); // Right Dribble
     } else {
-      playAnimation(localActions, "1"); // Idle
+      // OFFENSE GROUP (keep your existing offense moves)
+      if (qPressed) {
+        // Crossover (you already mapped this to index 3)
+        playAnimation(localActions, "3");
+        qPressed = false;
+      } else if (holdingBall && moving) {
+        // Dribble while moving (index 5 as you had)
+        if (!dribbling) {
+          dribbling = true;
+          dribbleStartTime = performance.now();
+        }
+        playAnimation(localActions, "5");
+      } else if (moving) {
+        // Running / your “right dribble” stand-in (index 7)
+        playAnimation(localActions, "7");
+      } else {
+        // Idle (shared, index 1)
+        playAnimation(localActions, "1");
+      }
     }
   }
 
