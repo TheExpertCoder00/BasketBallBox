@@ -325,11 +325,22 @@ wss.on('connection', (ws) => {
       stopBallSim(room);            // also broadcasts ballSim:false if needed
       room.lastShooterRole = null;  // clear shooter tag when someone picks up
       if (!room.ballOwnerRole) {
+        // If defender gets the loose ball, they become offense (no reset)
+        if (ws._role === room.defenseRole) {
+          const newOffense = ws._role;
+          const newDefense = (newOffense === 'player1') ? 'player2' : 'player1';
+          room.offenseRole = newOffense;
+          room.defenseRole = newDefense;
+
+          // Tell clients to update role labels ONLY (no spawn snap)
+          broadcastRoom(room, { type: 'possession', offense: newOffense, defense: newDefense });
+        }
+
+        // Give ball to the picker-upper (whoever it is)
         room.ballOwnerRole = ws._role;
         room.ball.held = true;
         broadcastRoom(room, { type:'ballOwner', role: ws._role, held:true });
-        // holder will drive positions; send a stamped echo so seq advances
-        sendBall(room);
+        sendBall(room); // stamped state
       }
       return;
     }
