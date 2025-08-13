@@ -31,7 +31,6 @@ const FLOOR_CENTER_Z  = (COURT_FRONT_Z + COURT_BACK_Z) / 2;
 const FENCE_H = 3.0;
 const FENCE_THICK = 0.1;
 
-
 const DEF_Z = HOOP_POS.z + 5;  // defender between hoop and offense
 const OFF_Z = HOOP_POS.z + 8;  // offense out front with ball
 const DEFENDER_SPAWN = new THREE.Vector3(HOOP_POS.x, 1.6, DEF_Z);
@@ -333,6 +332,21 @@ const roomPasswordInput = document.getElementById('roomPassword');
 const tabPublic = document.getElementById('tabPublic');
 const tabPrivate = document.getElementById('tabPrivate');
 
+const toWinGroup = document.getElementById('toWinGroup');
+let selectedToWin = 11;
+
+if (toWinGroup) {
+  toWinGroup.querySelectorAll('button[data-to]').forEach(btn => {
+    btn.onclick = () => {
+      selectedToWin = parseInt(btn.dataset.to, 10);
+      toWinGroup.querySelectorAll('button[data-to]').forEach(b => {
+        b.classList.toggle('is-active', b === btn);
+      });
+    };
+  });
+}
+
+
 // Tabs behavior
 function setTab(tab) {
   tabPublic.classList.toggle('is-active', tab === 'public');
@@ -367,8 +381,8 @@ function renderList(targetEl, list, isPrivate) {
   targetEl.innerHTML = list.map(r => `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-bottom:1px solid #222;">
       <div>
-        <b>${r.name}</b> — ${r.count}/${r.max}${isPrivate ? ' 🔒' : ''}
-        ${r.mode === 'competitive' ? ' <span style="font-size:12px;opacity:.8;">(Competitive)</span>' : ''}
+        <b>${r.name}</b> — ${r.count}/${r.max}${isPrivate ? ' 🔒' : ''} — to ${r.toWin || 11}
+        ${r.mode === 'competitive' ? '<span style="font-size:12px;opacity:.8;">(Competitive)</span>' : ''}
       </div>
       <button
         data-room="${r.id}"
@@ -450,8 +464,9 @@ createRoomBtn.onclick = () => {
     name,
     autoJoin:true,
     private: isPriv,
-    password: isPriv ? pw : undefined,
-    mode
+    password: isPriv ? pw : null,
+    mode,
+    toWin: selectedToWin
   }));
 };
 
@@ -564,6 +579,28 @@ socket.addEventListener('message', (e) => {
       document.getElementById('theirScore').textContent = theirScore;
       showIntermission(); // pause on the defender’s side too
       break;
+    
+    case 'gameOver': {
+      const won = (data.winner === myRole);
+      const me = parseInt(document.getElementById('myScore').textContent, 10) || 0;
+      const them = parseInt(document.getElementById('theirScore').textContent, 10) || 0;
+      const finalMe = data.scores ? (myRole === 'player1' ? data.scores.player1 : data.scores.player2) : me;
+      const finalThem = data.scores ? (myRole === 'player1' ? data.scores.player2 : data.scores.player1) : them;
+
+      const m = document.getElementById('gameOverModal');
+      const t = document.getElementById('gameOverTitle');
+      const s = document.getElementById('gameOverSub');
+      if (m && t && s) {
+        t.textContent = won ? 'You Won!' : 'You Lost';
+        s.textContent = `Final score ${finalMe}–${finalThem} (to ${data.toWin || 11})`;
+        m.style.display = 'flex';
+      }
+
+      // Stop any “between points” overlay and input lock, if you have one
+      if (typeof hideIntermission === 'function') hideIntermission?.();
+
+      break;
+    }
 
     case 'animation':
       if (remoteActions[data.animation]) {
@@ -604,6 +641,27 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
 const canvas = renderer.domElement;
+
+const gameOverBack = document.getElementById('gameOverBack');
+if (gameOverBack) {
+  gameOverBack.onclick = () => {
+    const m = document.getElementById('gameOverModal');
+    if (m) m.style.display = 'none';
+
+    // Reset local UI scores
+    myScore = 0; theirScore = 0;
+    document.getElementById('myScore').textContent = '0';
+    document.getElementById('theirScore').textContent = '0';
+
+    // Leave room on server
+    socket.send(JSON.stringify({ type:'leaveRoom' }));
+
+    // ⬅️ IMPORTANT: restore flex so it’s centered again
+    lobbyEl.style.display = 'flex';
+
+    setUIState('lobby');
+  };
+}
 
 let uiState = 'lobby'; // 'lobby' | 'game'
 function setUIState(state) {
@@ -1173,4 +1231,3 @@ function animate() {
   if (remoteMixer) remoteMixer.update(delta);
 }
 animate();
-
