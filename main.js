@@ -43,6 +43,10 @@ const modeTip = document.getElementById('modeTip');
 let selectedMode = 'casual';   // 'casual' | 'competitive'
 let isLoggedIn = false;        // placeholder; wire this when auth lands
 
+window.addEventListener('auth:changed', (e) => {
+  isLoggedIn = !!e.detail.loggedIn;          // now the Create/Join logic will respect auth
+  // Optional: show who’s logged in in your UI, etc.
+});
 
 function applySpawnForRoles(offenseRole) {
   // ALWAYS: hoop (x≈0)  —  defender (x≈+2.8)  —  offense+ball (x≈+5.8)
