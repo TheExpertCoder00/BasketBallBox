@@ -8,9 +8,15 @@
   // --- State helpers ---
   const getUsers = () => JSON.parse(localStorage.getItem(STORAGE_USERS) || '{}');
   const saveUsers = (u) => localStorage.setItem(STORAGE_USERS, JSON.stringify(u));
-  const setSession = (email) => {
-    if (email) localStorage.setItem(STORAGE_SESSION, JSON.stringify({ email, ts: Date.now() }));
-    else localStorage.removeItem(STORAGE_SESSION);
+  const setSession = (email, username) => {
+    if (email) {
+      localStorage.setItem(
+        STORAGE_SESSION,
+        JSON.stringify({ email, username: username || null, ts: Date.now() })
+      );
+    } else {
+      localStorage.removeItem(STORAGE_SESSION);
+    }
     dispatchAuthChanged();
     renderAuthButtons();
   };
@@ -23,11 +29,14 @@
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // --- Events to inform the game/app ---
   function dispatchAuthChanged() {
     const s = getSession();
     window.dispatchEvent(new CustomEvent('auth:changed', {
-      detail: { loggedIn: !!s, email: s?.email || null }
+      detail: {
+        loggedIn: !!s,
+        email: s?.email || null,
+        username: s?.username || null
+      }
     }));
   }
 
@@ -63,6 +72,7 @@
         </form>
         <form id="bbxSignup" style="display:none;">
           <input id="bbxSignEmail" type="email" placeholder="Email" required class="input" style="width:100%;margin-bottom:8px;">
+          <input id="bbxSignupUsername" type="text" placeholder="Username" style="width:100%; padding:10px; border:0; border-radius:8px; margin-bottom:10px;">
           <input id="bbxSignPass"  type="password" placeholder="Password (min 6 chars)" minlength="6" required class="input" style="width:100%;margin-bottom:8px;">
           <input id="bbxSignPass2" type="password" placeholder="Confirm password" required class="input" style="width:100%;margin-bottom:12px;">
           <button class="btn btn-primary" style="width:100%;">Create account</button>
@@ -95,7 +105,7 @@
 
     if (s?.email) {
       const label = document.createElement('div');
-      label.textContent = s.email;
+      label.textContent = s.username ? `${s.username} (${s.email})` : s.email;
       label.style.cssText = 'opacity:.9; align-self:center;';
       const logout = document.createElement('button');
       logout.textContent = 'Log out';
@@ -142,20 +152,24 @@
   async function onSignup(ev){
     ev.preventDefault();
     err('');
-    const email = modal.querySelector('#bbxSignEmail').value.trim().toLowerCase();
-    const pass  = modal.querySelector('#bbxSignPass').value;
-    const pass2 = modal.querySelector('#bbxSignPass2').value;
 
-    if (!email || !pass) return err('Please fill all fields.');
+    const email    = modal.querySelector('#bbxSignEmail').value.trim().toLowerCase();
+    const pass     = modal.querySelector('#bbxSignPass').value;
+    const pass2    = modal.querySelector('#bbxSignPass2').value;
+    const username = modal.querySelector('#bbxSignupUsername').value.trim(); // <-- need .value.trim()
+
+    if (!email || !pass || !username) return err('Please fill all fields.');
     if (pass.length < 6) return err('Password must be at least 6 characters.');
     if (pass !== pass2)  return err('Passwords do not match.');
 
     const users = getUsers();
     if (users[email]) return err('An account with this email already exists.');
 
-    users[email] = { pwh: await hash(pass), createdAt: Date.now() };
+    users[email] = { username, pwh: await hash(pass), createdAt: Date.now() };
     saveUsers(users);
-    setSession(email);
+
+    // store username in active session too
+    setSession(email, username);
     closeModal();
   }
 
@@ -172,16 +186,17 @@
     const pwh = await hash(pass);
     if (pwh !== record.pwh) return err('Incorrect password.');
 
-    setSession(email);
+    setSession(email, record.username || null); // <-- carry username from storage
     closeModal();
   }
 
-  // Expose a tiny API if needed
   window.Auth = {
-    get current() { return getSession()?.email || null; },
-    get loggedIn(){ return !!getSession(); },
+    get current()  { return getSession()?.email || null; },
+    get username() { return getSession()?.username || null; },
+    get loggedIn() { return !!getSession(); },
     logout(){ setSession(null); }
   };
+
 
   // Boot
   document.addEventListener('DOMContentLoaded', () => {
