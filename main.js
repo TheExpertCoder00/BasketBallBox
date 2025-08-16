@@ -1,6 +1,77 @@
 import * as THREE from '../build/three.module.js';
 import { GLTFLoader } from './GLTFLoader.js';
 
+let ws;
+
+(function initWS() {
+  const url =
+    (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+    location.host + '/ws';
+
+  function connect() {
+    window.bbxWS = new WebSocket(url);
+    const ws = window.bbxWS;
+
+    ws.onopen = () => {
+      console.log('[bbxWS] connected');
+      sendAuthWith(ws);   // uses the exact socket that just opened
+    };
+
+    ws.onclose = () => {
+      console.warn('[bbxWS] closed; retrying in 1.5s');
+      setTimeout(connect, 1500);
+    };
+
+    ws.onerror = (e) => console.error('[bbxWS] error', e);
+
+    ws.onmessage = (ev) => {
+      let data; try { data = JSON.parse(ev.data); } catch { return; }
+      console.log('[bbxWS msg]', data);
+    };
+  }
+
+  connect();
+})();
+
+
+firebase.auth().onAuthStateChanged(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    sendAuth();
+  }
+});
+
+function withAuth(payload) {
+  let u = null;
+  try { u = firebase.auth().currentUser || null; } catch {}
+  return u ? { ...payload, auth: { uid: u.uid, email: u.email || null, name: u.displayName || null } } : payload;
+}
+
+try {
+  firebase.auth().onAuthStateChanged((u) => {
+    if (window.bbxWS) sendWSAuthState(window.bbxWS, u);
+  });
+} catch {}
+
+function sendWSAuthState(ws, user = null) {
+  try { user = user ?? firebase.auth().currentUser; } catch { user = null; }
+  const payload = user ? {
+    type: 'auth',
+    authed: true,
+    uid: user.uid,
+    email: user.email || null,
+    name: user.displayName || null,
+  } : { type: 'auth', authed: false };
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+  } else if (ws) {
+    ws.addEventListener('open', () => {
+      try { ws.send(JSON.stringify(payload)); } catch {}
+    }, { once: true });
+  }
+}
+
+
 const clock = new THREE.Clock();
 const localActions = {};
 const remoteActions = {};
@@ -42,11 +113,19 @@ const modeTip = document.getElementById('modeTip');
 
 let selectedMode = 'casual';   // 'casual' | 'competitive'
 let isLoggedIn = false;        // placeholder; wire this when auth lands
+let authLoaded = false;
 
 window.addEventListener('auth:changed', (e) => {
-  isLoggedIn = !!e.detail.loggedIn;          // now the Create/Join logic will respect auth
-  // Optional: show who’s logged in in your UI, etc.
+  isLoggedIn = !!e.detail.loggedIn;
+  authLoaded = true;  // Set once the event fires (state is now known)
+  // Optional: Re-render UI, e.g., enable buttons or refresh room list
+  setMode(selectedMode);  // Refresh mode tip/UI
 });
+
+function isSignedIn() {
+  try { return !!firebase.auth().currentUser; } catch { return false; }
+}
+
 
 function applySpawnForRoles(offenseRole) {
   // ALWAYS: hoop (x≈0)  —  defender (x≈+2.8)  —  offense+ball (x≈+5.8)
@@ -88,7 +167,11 @@ function setMode(mode) {
   selectedMode = (mode === 'competitive') ? 'competitive' : 'casual';
   modeCasualBtn.classList.toggle('is-active', selectedMode === 'casual');
   modeCompetitiveBtn.classList.toggle('is-active', selectedMode === 'competitive');
-  modeTip.textContent = (selectedMode === 'competitive') ? 'Competitive requires login (coming soon)' : '';
+  modeTip.textContent = (selectedMode === 'competitive') ? 'Competitive requires login' : '';
+
+  const uiRoot = document.querySelector('.create-row') || document.getElementById('lobby');
+  onModeChanged(selectedMode, uiRoot);
+
   try { socket.send(JSON.stringify({ type:'listRooms' })); } catch {}
 }
 modeCasualBtn.onclick = () => setMode('casual');
@@ -183,6 +266,42 @@ function ensureCoinUI() {
     tailsBtn.textContent = 'Tails ✓';
     sendCoinCall('tails');
   };
+}
+
+function injectWagerControls(modalRoot) {
+  let wrap = modalRoot.querySelector('#bbxWagerWrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'bbxWagerWrap';
+    wrap.style.cssText = 'margin-top:10px; display:none;';
+    wrap.innerHTML = `
+      <label style="display:block; margin-bottom:6px; color:#ddd; font-size:14px;">
+        Wager (coins)
+      </label>
+      <input id="bbxWagerInput" type="number" min="1" step="1" value="50"
+             style="width:120px; padding:6px 8px; border-radius:8px; border:1px solid #333; background:#1a1a1a; color:#fff;">
+      <div id="bbxWagerHint" style="margin-top:6px; color:#aaa; font-size:12px;"></div>
+    `;
+    modalRoot.appendChild(wrap);
+  }
+  return wrap;
+}
+
+async function onModeChanged(mode, modalRoot) {
+  const wrap = injectWagerControls(modalRoot);
+  const input = wrap.querySelector('#bbxWagerInput');
+  const hint  = wrap.querySelector('#bbxWagerHint');
+
+  if (mode === 'competitive') {
+    wrap.style.display = '';
+    // Cap wager by current balance
+    const user = firebase.auth().currentUser;
+    const coins = user ? await window.BBXCoins.getCoins(user.uid) : 0;
+    input.max = Math.max(1, coins);
+    hint.textContent = `You can wager up to ⛁ ${coins}.`;
+  } else {
+    wrap.style.display = 'none';
+  }
 }
 
 function sendCoinCall(call) {
@@ -297,7 +416,7 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
-const socket = new WebSocket("wss://basketballbox.onrender.com");
+const socket = new WebSocket("ws://localhost:8080");
 
 
 let myScore = 0;
@@ -354,6 +473,32 @@ if (toWinGroup) {
   });
 }
 
+// --- Auth sending (backward-compatible) ---
+function _resolveWS(sock) {
+  const ws = sock || window.bbxWS;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return null;
+  return ws;
+}
+
+function _authPayload() {
+  const user = (window.firebase && firebase.auth().currentUser) || null;
+  return user
+    ? { type: 'auth', uid: user.uid, email: user.email, name: user.displayName || null }
+    : { type: 'auth' };
+}
+
+function _sendAuthInternal(sock) {
+  const ws = _resolveWS(sock);
+  if (!ws) { console.warn('[bbxWS] sendAuth skipped: no open socket'); return; }
+  ws.send(JSON.stringify(_authPayload()));
+}
+
+// Legacy: zero-arg version (kept for compatibility)
+function sendAuth() { _sendAuthInternal(null); }
+
+// New: pass-a-socket version (useful in ws.onopen)
+function sendAuthWith(sock) { _sendAuthInternal(sock); }
+
 
 // Tabs behavior
 function setTab(tab) {
@@ -382,46 +527,94 @@ isPrivateChk.onchange = () => {
 };
 
 function renderList(targetEl, list, isPrivate) {
+  targetEl.innerHTML = '';
   if (!list || list.length === 0) {
     targetEl.innerHTML = `<div style="opacity:.8">No ${isPrivate ? 'private' : 'public'} rooms yet. Create one!</div>`;
     return;
   }
-  targetEl.innerHTML = list.map(r => `
-    <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; border-bottom:1px solid #222;">
-      <div>
-        <b>${r.name}</b> — ${r.count}/${r.max}${isPrivate ? ' 🔒' : ''} — to ${r.toWin || 11}
-        ${r.mode === 'competitive' ? '<span style="font-size:12px;opacity:.8;">(Competitive)</span>' : ''}
-      </div>
-      <button
-        data-room="${r.id}"
-        data-name="${r.name}"
-        data-mode="${r.mode || 'casual'}"
-        style="cursor:pointer; padding:6px 10px; border-radius:8px; border:0;">
-        Join
-      </button>
-    </div>
-  `).join('');
-  [...targetEl.querySelectorAll('button[data-room]')].forEach(btn => {
-    btn.onclick = () => {
+
+  list.forEach((r) => {
+    // Build the row via your factory
+    const row = renderRoomRow(r); // <-- must return a DOM element
+    targetEl.appendChild(row);
+
+    // Find a join button inside the row
+    const btn =
+      row.querySelector('.joinBtn') ||
+      row.querySelector('button[data-room]') ||
+      row.querySelector('button');
+
+    if (!btn) return;
+
+    // Keep the same data attrs your old code relied on
+    btn.dataset.room = r.id;
+    btn.dataset.name = r.name || '';
+    btn.dataset.mode = (r.mode || 'casual');
+    if (r.wager != null) btn.dataset.wager = r.wager; // handy for coin checks later
+
+    btn.onclick = async () => {
       const mode = btn.dataset.mode || 'casual';
       const roomId = btn.dataset.room;
       const roomName = btn.dataset.name || '';
+
       if (isPrivate) {
-        if (mode === 'competitive' && !isLoggedIn) {
-          alert('Please sign in to join Competitive rooms (coming soon).');
+        // unchanged — the password modal flow handles this
+        if (mode === 'competitive' && !isSignedIn()) {
+          alert('Please sign in to join Competitive rooms.');
           return;
         }
         openPwModal(roomId, roomName);
       } else {
-        if (mode === 'competitive' && !isLoggedIn) {
-          alert('Please sign in to join Competitive rooms (coming soon).');
-          return;
+        if (mode === 'competitive') {
+          if (!isSignedIn()) { alert('Please sign in to join Competitive rooms'); return; }
+          const user = firebase.auth().currentUser;
+          const idToken = await user.getIdToken();
+          socket.send(JSON.stringify(withAuth({ type: 'joinRoom', roomId, token: idToken })));
+        } else {
+          socket.send(JSON.stringify({ type: 'joinRoom', roomId }));
         }
-        socket.send(JSON.stringify({ type:'joinRoom', roomId }));
       }
     };
   });
 }
+
+async function updateJoinButtonsForCoins(container) {
+  const user  = firebase.auth().currentUser;
+  const coins = user ? await BBXCoins.getCoins(user.uid) : 0;
+  container.querySelectorAll('.roomRow').forEach(r => {
+    const info = r.querySelector('.roomCol')?.innerText || '';
+    const btn  = r.querySelector('.joinBtn');
+    const match = info.match(/Wager ⛁ (\d+)/);
+    if (match) {
+      const need = parseInt(match[1], 10);
+      if (need > coins) {
+        btn.disabled = true;
+        btn.textContent = `Need ⛁${need}`;
+        btn.title = `Your balance is ⛁${coins}`;
+      }
+    }
+  });
+}
+
+function renderRoomRow(room) {
+  // room = { id, name, mode, wager, toWin, ... }
+  const row = document.createElement('div');
+  row.className = 'roomRow';
+  row.innerHTML = `
+    <div class="roomCol">
+      <div><b>${room.name || room.id}</b></div>
+      <div class="muted">
+        ${room.mode === 'competitive'
+          ? `Competitive · Wager ⛁ ${room.wager ?? 0}`
+          : 'Casual'}
+        · to ${room.toWin ?? 11}
+      </div>
+    </div>
+    <button class="btn btn-primary joinBtn" data-room="${room.id}">Join</button>
+  `;
+  return row;
+}
+
 
 function renderRooms(rooms) {
   // Filter by selected mode (server includes r.mode in summaries)
@@ -430,6 +623,11 @@ function renderRooms(rooms) {
   const pri = rooms.filter(r =>  r.private).filter(byMode);
   renderList(publicListEl, pub, false);
   renderList(privateListEl, pri, true);
+
+  if (window.BBXCoins) {
+    updateJoinButtonsForCoins(publicListEl);
+    updateJoinButtonsForCoins(privateListEl);
+  }
 }
 
 function openPwModal(roomId, roomName) {
@@ -448,40 +646,77 @@ pwCancel.onclick = closePwModal;
 pwInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') pwJoin.click();
 });
-pwJoin.onclick = () => {
+pwJoin.onclick = async () => {
   const pw = pwInput.value.trim();
   if (!pendingJoinRoomId) return;
-  socket.send(JSON.stringify({ type:'joinRoom', roomId: pendingJoinRoomId, password: pw }));
+
+  const user = firebase.auth().currentUser;
+  const idToken = user ? await user.getIdToken() : null;
+
+  socket.send(JSON.stringify(withAuth({
+    type: 'joinRoom',
+    roomId: pendingJoinRoomId,   // <-- was `id` before; use the right var
+    password: pw || null,
+    token: idToken               // <-- ADD THIS
+  })));
 };
 
-createRoomBtn.onclick = () => {
-  const name = newRoomNameInput.value.trim() || 'My Room';
+
+createRoomBtn.onclick = async () => {
+  const name  = newRoomNameInput.value.trim() || 'My Room';
   const isPriv = isPrivateChk.checked;
-  const pw = roomPasswordInput.value;
-  const mode = selectedMode;
-  if (mode === 'competitive' && !isLoggedIn) {
-    alert('Please sign in to create a Competitive match (coming soon).');
-    return;
+  const pw    = roomPasswordInput.value;
+
+  // Use the real container that exists:
+  const uiRoot = document.querySelector('.create-row') || document.getElementById('lobby');
+
+  // Use the real mode state (set by your mode buttons)
+  const mode = selectedMode; // 'casual' | 'competitive'
+
+  let wager = 0;
+  if (mode === 'competitive') {
+    const wrap  = injectWagerControls(uiRoot);
+    const input = wrap.querySelector('#bbxWagerInput');
+    const user  = firebase.auth().currentUser;
+    const coins = user ? await BBXCoins.getCoins(user.uid) : 0;
+
+    if (!authLoaded) {
+      showPopup('Authenticating... Please wait a moment.');  // Or disable button
+      return;
+    }
+    if (!isSignedIn()) { alert('Please sign in'); return; }
+    wager = Math.max(1, parseInt(input.value, 10) || 1);
+    if (wager > coins) { alert(`Not enough coins. Balance ⛁ ${coins}.`); return; }
   }
-  if (isPriv && !pw) {
-    alert('Please set a password for private rooms.');
-    return;
-  }
-  socket.send(JSON.stringify({
-    type:'createRoom',
+
+  if (isPriv && !pw) { alert('Please set a password for private rooms.'); return; }
+
+  // ... after all your checks for authLoaded / isSignedIn / wager / password, etc.
+
+  const user = firebase.auth().currentUser;
+  const idToken = user ? await user.getIdToken() : null;
+
+  socket.send(JSON.stringify(withAuth({
+    type: 'createRoom',
     name,
-    autoJoin:true,
+    autoJoin: true,
     private: isPriv,
     password: isPriv ? pw : null,
-    mode,
-    toWin: selectedToWin
-  }));
+    mode,            // 'competitive' or 'casual'
+    wager,           // only matters if competitive
+    toWin: selectedToWin,
+    token: idToken   // <-- ADD THIS
+  })));
+
 };
 
 // Ask for room list on connect
 socket.addEventListener('open', () => {
   socket.send(JSON.stringify({ type:'listRooms' }));
-});
+  firebase.auth().currentUser.getIdToken(true).then(token => {
+    ws.send(JSON.stringify({ type: 'auth', token }));
+  });
+}); 
 
 let currentBallOwner = null;
 
@@ -498,7 +733,64 @@ socket.addEventListener('message', (e) => {
         alert(data.message || 'Something went wrong.');
       }
       break;
-        
+
+    case 'roomReady': {
+      // Competitive: escrow (hold) wager when match becomes ready
+      if (data.mode === 'competitive') {
+        const user = firebase.auth().currentUser;
+        if (!user) break;
+        (async () => {
+          try {
+            await BBXCoins.escrowStart(user.uid, data.roomId, data.wager);
+          } catch (e) {
+            console.error('Escrow failed:', e);
+            alert('Unable to hold wager coins. You cannot start this match.');
+            socket.send(JSON.stringify({ type:'leaveRoom', roomId: data.roomId }));
+          }
+        })();
+      }
+      break;
+    }
+
+    case 'roomCanceled': {
+      // If lobby/game cancels before start, refund the wager
+      if (data.mode === 'competitive') {
+        const user = firebase.auth().currentUser;
+        if (!user) break;
+        (async () => {
+          try { await BBXCoins.escrowRefund(user.uid, data.roomId, data.wager); }
+          catch (e) { console.warn('Refund escrow error:', e); }
+        })();
+      }
+      break;
+    }
+
+    case 'matchOver': {
+      // Pay the winner 2*wager
+      if (data.mode === 'competitive') {
+        const user = firebase.auth().currentUser;
+        if (!user) break;
+        const iAmWinner =
+          (data.winnerUid && data.winnerUid === user.uid) ||
+          (data.winnerRole && data.winnerRole === (window.myRole || ''));
+        (async () => {
+          try {
+            if (iAmWinner) {
+              await BBXCoins.escrowFinishWin(user.uid, data.roomId, data.wager);
+            } else {
+              // loser: clear any escrow note (already paid on start)
+              await firebase.database()
+                .ref(`users/${user.uid}/escrows/${data.roomId}`).remove()
+                .catch(() => {});
+            }
+          } catch (e) {
+            console.warn('Settlement error:', e);
+          }
+        })();
+      }
+      break;
+    }
+
     // If you kept the lightweight 'possession' message from earlier, keep it for UI:
     case 'possession': {
       lastRoles.offense = data.offense;

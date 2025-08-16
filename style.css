@@ -111,3 +111,20 @@ body{ background:var(--bg); color:var(--text); }
 .create-row{
   display:flex; gap:8px; align-items:center; flex-wrap:wrap;
 }
+.roomRow .muted{ color:var(--muted); font-size:12px; }
+.roomRow .btn[disabled]{ opacity:.55; cursor:not-allowed; }
+
+#bbxCoinsBadge{
+  position:absolute; top:58px; right:14px;
+  padding:6px 10px; border-radius:10px;
+  background:#111; border:1px solid #333;
+  font-weight:700; font-family:system-ui,Arial;
+  z-index:10002;
+}
+/* Room list styling (if you don’t already have it) */
+.roomRow{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:12px; border:1px solid var(--border); background:var(--panel);
+  border-radius:12px; margin:8px 0;
+}
+.muted{ color:var(--muted); font-size:12px; }

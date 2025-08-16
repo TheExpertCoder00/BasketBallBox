@@ -1,44 +1,39 @@
-// auth.js
-// Tiny in-browser auth (localStorage). Not production-grade — just enough for your prototype.
-
 (function () {
-  const STORAGE_USERS = 'bbx_users';
-  const STORAGE_SESSION = 'bbx_session';
+  console.log('Firebase loaded:', typeof firebase); // Debug log
+  if (typeof firebase === 'undefined') {
+    console.error('Firebase is not loaded. Check script tags in index.html.');
+    return;
+  }
 
-  // --- State helpers ---
-  const getUsers = () => JSON.parse(localStorage.getItem(STORAGE_USERS) || '{}');
-  const saveUsers = (u) => localStorage.setItem(STORAGE_USERS, JSON.stringify(u));
-  const setSession = (email, username) => {
-    if (email) {
-      localStorage.setItem(
-        STORAGE_SESSION,
-        JSON.stringify({ email, username: username || null, ts: Date.now() })
-      );
-    } else {
-      localStorage.removeItem(STORAGE_SESSION);
-    }
-    dispatchAuthChanged();
-    renderAuthButtons();
-  };
-  const getSession = () => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_SESSION) || 'null'); } catch { return null; }
-  };
-  const hash = async (text) => {
-    const enc = new TextEncoder().encode(text);
-    const buf = await crypto.subtle.digest('SHA-256', enc);
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const firebaseConfig = {
+    apiKey: "AIzaSyBPWhfXqqag1viWrN7scRlgXyfZknlqBlc",
+    authDomain: "basketballbox-186a1.firebaseapp.com",
+    databaseURL: "https://basketballbox-186a1-default-rtdb.firebaseio.com",
+    projectId: "basketballbox-186a1",
+    storageBucket: "basketballbox-186a1.firebasestorage.app",
+    messagingSenderId: "230762781087",
+    appId: "1:230762781087:web:b168823789953f61e645aa",
+    measurementId: "G-6V7Y37N8RC"
   };
 
-  function dispatchAuthChanged() {
-    const s = getSession();
+  const app = firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth(app);
+
+  function dispatchAuthChanged(user) {
     window.dispatchEvent(new CustomEvent('auth:changed', {
       detail: {
-        loggedIn: !!s,
-        email: s?.email || null,
-        username: s?.username || null
+        loggedIn: !!user,
+        email: user?.email || null,
+        username: user?.displayName || null
       }
     }));
   }
+
+  // Listen for auth state changes (fires on login/logout/refresh)
+  auth.onAuthStateChanged((user) => {
+    dispatchAuthChanged(user);
+    renderAuthButtons();
+  });
 
   // --- UI injection (buttons + modal) ---
   let authBar, modal, tabLoginBtn, tabSignupBtn, formLogin, formSignup, errBox;
@@ -72,7 +67,7 @@
         </form>
         <form id="bbxSignup" style="display:none;">
           <input id="bbxSignEmail" type="email" placeholder="Email" required class="input" style="width:100%;margin-bottom:8px;">
-          <input id="bbxSignupUsername" type="text" placeholder="Username" style="width:100%; padding:10px; border:0; border-radius:8px; margin-bottom:10px;">
+          <input id="bbxSignupUsername" type="text" placeholder="Username" required class="input" style="width:100%;margin-bottom:8px;">
           <input id="bbxSignPass"  type="password" placeholder="Password (min 6 chars)" minlength="6" required class="input" style="width:100%;margin-bottom:8px;">
           <input id="bbxSignPass2" type="password" placeholder="Confirm password" required class="input" style="width:100%;margin-bottom:12px;">
           <button class="btn btn-primary" style="width:100%;">Create account</button>
@@ -101,17 +96,17 @@
   function renderAuthButtons() {
     if (!authBar) return;
     authBar.innerHTML = '';
-    const s = getSession();
+    const user = auth.currentUser;
 
-    if (s?.email) {
+    if (user) {
       const label = document.createElement('div');
-      label.textContent = s.username ? `${s.username} (${s.email})` : s.email;
+      label.textContent = user.displayName ? `${user.displayName} (${user.email})` : user.email;
       label.style.cssText = 'opacity:.9; align-self:center;';
       const logout = document.createElement('button');
       logout.textContent = 'Log out';
       logout.className = 'btn';
       logout.style.cssText = 'padding:8px 12px; border-radius:10px; border:0; background:#222; color:#ddd; cursor:pointer;';
-      logout.onclick = () => setSession(null);
+      logout.onclick = () => auth.signOut();
 
       authBar.appendChild(label);
       authBar.appendChild(logout);
@@ -153,54 +148,57 @@
     ev.preventDefault();
     err('');
 
-    const email    = modal.querySelector('#bbxSignEmail').value.trim().toLowerCase();
-    const pass     = modal.querySelector('#bbxSignPass').value;
-    const pass2    = modal.querySelector('#bbxSignPass2').value;
-    const username = modal.querySelector('#bbxSignupUsername').value.trim(); // <-- need .value.trim()
+    const email = modal.querySelector('#bbxSignEmail').value.trim().toLowerCase();
+    const pass = modal.querySelector('#bbxSignPass').value;
+    const pass2 = modal.querySelector('#bbxSignPass2').value;
+    const username = modal.querySelector('#bbxSignupUsername').value.trim();
 
     if (!email || !pass || !username) return err('Please fill all fields.');
     if (pass.length < 6) return err('Password must be at least 6 characters.');
-    if (pass !== pass2)  return err('Passwords do not match.');
+    if (pass !== pass2) return err('Passwords do not match.');
 
-    const users = getUsers();
-    if (users[email]) return err('An account with this email already exists.');
-
-    users[email] = { username, pwh: await hash(pass), createdAt: Date.now() };
-    saveUsers(users);
-
-    // store username in active session too
-    setSession(email, username);
-    closeModal();
+    try {
+      const cred = await auth.createUserWithEmailAndPassword(email, pass);
+      console.log('Signup successful:', cred.user); // Debug log
+      await cred.user.updateProfile({ displayName: username });
+      closeModal();
+    } catch (e) {
+      console.error('Signup error:', e.code, e.message); // Debug log
+      if (e.code === 'auth/email-already-in-use') err('An account with this email already exists.');
+      else if (e.code === 'auth/invalid-email') err('Invalid email address.');
+      else if (e.code === 'auth/weak-password') err('Password is too weak.');
+      else err('Signup failed. Try again.');
+    }
   }
 
   async function onLogin(ev){
     ev.preventDefault();
     err('');
     const email = modal.querySelector('#bbxLoginEmail').value.trim().toLowerCase();
-    const pass  = modal.querySelector('#bbxLoginPass').value;
+    const pass = modal.querySelector('#bbxLoginPass').value;
     if (!email || !pass) return err('Please fill all fields.');
 
-    const users = getUsers();
-    const record = users[email];
-    if (!record) return err('Account not found. Try Sign up.');
-    const pwh = await hash(pass);
-    if (pwh !== record.pwh) return err('Incorrect password.');
-
-    setSession(email, record.username || null); // <-- carry username from storage
-    closeModal();
+    try {
+      await auth.signInWithEmailAndPassword(email, pass);
+      closeModal();
+    } catch (e) {
+      console.error('Login error:', e.code, e.message); // Debug log
+      if (e.code === 'auth/user-not-found' || e.code === 'auth/invalid-email') err('Account not found. Try Sign up.');
+      else if (e.code === 'auth/wrong-password') err('Incorrect password.');
+      else err('Login failed. Try again.');
+    }
   }
 
   window.Auth = {
-    get current()  { return getSession()?.email || null; },
-    get username() { return getSession()?.username || null; },
-    get loggedIn() { return !!getSession(); },
-    logout(){ setSession(null); }
+    get current()  { return auth.currentUser?.email || null; },
+    get username() { return auth.currentUser?.displayName || null; },
+    get loggedIn() { return !!auth.currentUser; },
+    logout(){ auth.signOut(); }
   };
-
 
   // Boot
   document.addEventListener('DOMContentLoaded', () => {
     ensureUI();
-    dispatchAuthChanged();
+    dispatchAuthChanged(auth.currentUser);
   });
 })();

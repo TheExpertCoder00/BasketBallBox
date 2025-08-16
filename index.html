@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js"></script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Basketball Box</title>
@@ -22,12 +24,19 @@
   Waiting for opponent...
 </div>
 <body>
+    <div class="lobby-header">
+      <h2 style="margin:0">🏀 BasketballBox — Join a Room</h2>
+      <!-- coins.js updates this automatically -->
+      <div id="bbxCoinsBadge" class="coins-badge">⛁ —</div>
+    </div>
     <div id="lobby" style="
       position:fixed; inset:0; background:#0b0b0ee6; color:white; z-index:10000;
       display:flex; align-items:center; justify-content:center; font-family:Arial;">
       <div style="width:min(720px, 92%);">
-        <h2 style="margin:0 0 12px">🏀 BasketballBox — Join a Room</h2>
-
+        <div class="lobby-header">
+          <h2 style="margin:0 0 12px">🏀 BasketballBox — Join a Room</h2>
+          <div id="bbxCoinsBadge" class="coins-badge">⛁ —</div>
+        </div>
         <!-- Mode selector -->
         <div class="toolbar">
           <span class="label">Mode:</span>
@@ -98,7 +107,14 @@
     <div id="scoreboard">
     You: <span id="myScore">0</span> &nbsp;&nbsp; Opponent: <span id="theirScore">0</span>
     </div>
+    <!-- Load Firebase compat SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <!-- Load your scripts -->
     <script src="auth.js"></script>
+    <script src="coins.js"></script>
     <script type="module" src="main.js"></script>
 </body>
 </html>
