@@ -416,7 +416,7 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
-const socket = new WebSocket("ws://localhost:8080");
+const socket = new WebSocket("wss://basketballbox.onrender.com");
 
 
 let myScore = 0;
@@ -1604,4 +1604,5 @@ function animate() {
   if (localMixer) localMixer.update(delta);
   if (remoteMixer) remoteMixer.update(delta);
 }
+
 animate();
