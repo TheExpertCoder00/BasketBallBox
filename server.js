@@ -2,46 +2,61 @@ const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const fs = require('fs');
-// server.js (top)
 const admin = require('firebase-admin');
 
-// Flexible, secure initialization
 function initFirebaseAdmin() {
-  // 1) Single base64 env with full JSON (recommended)
+  // Single base64 env with full JSON
   if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
-    const json = JSON.parse(
-      Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64').toString('utf8')
-    );
-    admin.initializeApp({ credential: admin.credential.cert(json) });
-    return;
-  }
-
-  // 2) Split env vars (project, email, key)
-  if (process.env.FIREBASE_PROJECT_ID &&
-      process.env.FIREBASE_CLIENT_EMAIL &&
-      process.env.FIREBASE_PRIVATE_KEY) {
+    const creds = JSON.parse(Buffer.from(
+      process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64'
+    ).toString('utf8'));
+    const databaseURL =
+      process.env.FIREBASE_DATABASE_URL ||
+      `https://${creds.project_id}-default-rtdb.firebaseio.com`;
     admin.initializeApp({
       credential: admin.credential.cert({
-        projectId:  process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        // Render/Heroku/GitHub often require escaped newlines, so fix them:
-        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        projectId:  creds.project_id || creds.projectId,
+        clientEmail: creds.client_email || creds.clientEmail,
+        privateKey:  (creds.private_key || creds.privateKey)
       }),
+      databaseURL,
     });
     return;
   }
 
-  // 3) GOOGLE_APPLICATION_CREDENTIALS points to a file on the server
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    admin.initializeApp({ credential: admin.credential.applicationDefault() });
+  // Split envs fallback
+  if (process.env.FIREBASE_PROJECT_ID &&
+      process.env.FIREBASE_CLIENT_EMAIL &&
+      process.env.FIREBASE_PRIVATE_KEY) {
+    const databaseURL =
+      process.env.FIREBASE_DATABASE_URL ||
+      `https://${process.env.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com`;
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId:  process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey:  process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      }),
+      databaseURL,
+    });
     return;
   }
 
-  console.warn('[firebase-admin] No credentials found; using default app() which may fail.');
+  // ADC fallback if you ever set GOOGLE_APPLICATION_CREDENTIALS on the host
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    admin.initializeApp({
+      credential: admin.credential.applicationDefault(),
+      databaseURL: process.env.FIREBASE_DATABASE_URL,
+    });
+    return;
+  }
+
+  console.warn('[firebase-admin] No credentials found; initializing default app()');
   admin.initializeApp();
 }
 
 initFirebaseAdmin();
+const rtdb = admin.database();
 
 // ---- HTTP + WS ----
 const PORT = process.env.PORT || 8080;
@@ -452,5 +467,6 @@ wss.on('connection', (ws) => {
     }
   });
 });
+
 
 
