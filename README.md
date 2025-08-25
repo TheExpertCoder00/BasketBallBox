@@ -2,6 +2,8 @@
 
 **BasketballBox** is a 3D multiplayer basketball game built with **Three.js** and **WebSockets**, where two players can compete 1v1 in real-time. You control your player in first-person view and use real basketball moves — dribble, shoot, dunk, block, and more.
 
+**Public repo updates are paused to protect secret keys. The game itself will keep getting updates until August 31, our final release**
+
 ---
 
 ## 🎮 Features
@@ -33,7 +35,7 @@ Press `Space` to cycle through animations (for testing).
 
 ## Final Release Date
 
-Final version will be released on August 15th.
+Final version will be released on August 31st. 
 
 ## ⚙️ Installation & Run Locally
 
