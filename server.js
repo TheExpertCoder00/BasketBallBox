@@ -1,29 +1,3 @@
-// server.js
-// BasketballBox WebSocket + Firebase coin escrow/payouts (drop-in)
-//
-// Requirements: serviceAccountKey.json at project root (same folder).
-// Firebase DB structure used:
-//   /users/{uid}/coins : number
-//   /rooms/{roomId}/paid/{uid} : true once escrow taken
-//   /payouts/{roomId} : { done: true, at: ts, winner: uid } to prevent double payout
-//   /tx/{uid}/{txId} : { type, amount, roomId, at } simple ledger
-//
-// Client protocol (messages from client -> server):
-//   { type: 'auth', idToken }
-//   { type: 'lobby:create', name, mode, wager }              // mode: 'casual' | 'competitive'
-//   { type: 'lobby:join', roomId }                            // triggers escrow if competitive
-//   { type: 'lobby:leave' }                                   // may refund if pre-start and paid
-//   { type: 'game:start' }                                    // marks room started (no refunds after)
-//   { type: 'game:over', winnerUid }                          // server validates later
-//   { type: 'winner:backToLobby' }                            // triggers payout to winner (once)
-//
-// Server -> Client message samples:
-//   { type: 'auth:ok', uid, email }
-//   { type: 'error', code, message }
-//   { type: 'coins:update', coins }
-//   { type: 'room:update', room }
-//   { type: 'toast', level: 'info'|'error'|'success', message }
-
 const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
@@ -452,3 +426,4 @@ wss.on('connection', (ws) => {
     }
   });
 });
+
