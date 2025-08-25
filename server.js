@@ -2,20 +2,46 @@ const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const fs = require('fs');
+// server.js (top)
 const admin = require('firebase-admin');
 
-const svcPath = './serviceAccountKey.json';
-if (!fs.existsSync(svcPath)) {
-  console.error('Missing serviceAccountKey.json next to server.js');
-  process.exit(1);
+// Flexible, secure initialization
+function initFirebaseAdmin() {
+  // 1) Single base64 env with full JSON (recommended)
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
+    const json = JSON.parse(
+      Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64').toString('utf8')
+    );
+    admin.initializeApp({ credential: admin.credential.cert(json) });
+    return;
+  }
+
+  // 2) Split env vars (project, email, key)
+  if (process.env.FIREBASE_PROJECT_ID &&
+      process.env.FIREBASE_CLIENT_EMAIL &&
+      process.env.FIREBASE_PRIVATE_KEY) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId:  process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        // Render/Heroku/GitHub often require escaped newlines, so fix them:
+        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      }),
+    });
+    return;
+  }
+
+  // 3) GOOGLE_APPLICATION_CREDENTIALS points to a file on the server
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    admin.initializeApp({ credential: admin.credential.applicationDefault() });
+    return;
+  }
+
+  console.warn('[firebase-admin] No credentials found; using default app() which may fail.');
+  admin.initializeApp();
 }
 
-// ---- Firebase Admin init (no envs; uses your serviceAccountKey.json) ----
-admin.initializeApp({
-  credential: admin.credential.cert(require(svcPath)),
-  databaseURL: `https://${require(svcPath).project_id}-default-rtdb.firebaseio.com`
-});
-const rtdb = admin.database();
+initFirebaseAdmin();
 
 // ---- HTTP + WS ----
 const PORT = process.env.PORT || 8080;
@@ -426,4 +452,5 @@ wss.on('connection', (ws) => {
     }
   });
 });
+
 
