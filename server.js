@@ -201,6 +201,7 @@ function stopBallSim(room) {
 const COIN_SPIN_MS = 5000;
 const COIN_CALL_TIMEOUT_MS = 10000;
 
+
 function promptCoin(room) {
   room.coin.pending = true;
   room.coin.callerRole = 'player1';
@@ -297,6 +298,7 @@ function winByForfeitAndClose(room, winnerRole) {
 }
 
 
+// --- Leave current room (REPLACE your current version) ---
 function leaveCurrentRoom(ws) {
   const roomId = ws._roomId;
   if (!roomId) return;
@@ -336,7 +338,6 @@ wss.on('connection', (ws) => {
   ws._id = ws._id || Math.random().toString(36).slice(2);
 
   ws._role = null;
-  ws._roomid = null;
   ws._authState = 'guest'; // 'guest' | 'pending' | 'confirmed' | 'unauthenticated'
   ws._user = null;
 
@@ -522,21 +523,34 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // ----- POSITION SYNC -----
     if (data.type === 'pos') {
+      // Basic validation
+      if (!ws._roomId) return;
       const room = rooms.get(ws._roomId);
       if (!room) return;
-    
-      for (const p of room.players) {
-        if (p.ws !== ws && p.ws.readyState === WebSocket.OPEN) {
-          p.ws.send(JSON.stringify({
-            type: 'pos',
-            from: ws._id,
-            x: data.x, y: data.y, z: data.z, rotY: data.rotY
-          }));
-        }
+
+      // Optionally store last known position on the server (handy for late joins)
+      ws._px = Number(data.x) || 0;
+      ws._py = Number(data.y) || 0;
+      ws._pz = Number(data.z) || 0;
+      ws._ry = Number(data.rotY) || 0;
+
+      // Re-broadcast to everyone *else* in the room
+      for (const peer of room.players) {
+        if (peer === ws || peer.readyState !== 1) continue;
+        peer.send(JSON.stringify({
+          type: 'pos',
+          from: ws._id,         // unique id per socket
+          x: ws._px,
+          y: ws._py,
+          z: ws._pz,
+          rotY: ws._ry
+        }));
       }
-      return;
+      return; // handled
     }
+
 
     if (data.type === 'score') {
       // expect: { by: 'player1'|'player2', points: 1|2|3 }
@@ -545,7 +559,13 @@ wss.on('connection', (ws) => {
       if (!by) return;
 
       room.scores[by] = Math.max(0, room.scores[by] + pts);
-      broadcastRoom(room, { type: 'score', scores: room.scores });
+      // tell clients exactly who scored and by how much
+      broadcastRoom(room, { 
+        type: 'score', 
+        by,                // 'player1' | 'player2'
+        points: pts,       // 1 | 2 | 3
+        scores: room.scores
+      });
 
       // possession flips after score
       room.offenseRole = otherRole(by);
@@ -599,5 +619,3 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`WS server listening on :${PORT}`);
 });
-
-
