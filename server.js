@@ -1,46 +1,61 @@
-// server.js
-// BasketballBox WebSocket + Firebase coin escrow/payouts (drop-in)
-//
-// Requirements: serviceAccountKey.json at project root (same folder).
-// Firebase DB structure used:
-//   /users/{uid}/coins : number
-//   /rooms/{roomId}/paid/{uid} : true once escrow taken
-//   /payouts/{roomId} : { done: true, at: ts, winner: uid } to prevent double payout
-//   /tx/{uid}/{txId} : { type, amount, roomId, at } simple ledger
-//
-// Client protocol (messages from client -> server):
-//   { type: 'auth', idToken }
-//   { type: 'lobby:create', name, mode, wager }              // mode: 'casual' | 'competitive'
-//   { type: 'lobby:join', roomId }                            // triggers escrow if competitive
-//   { type: 'lobby:leave' }                                   // may refund if pre-start and paid
-//   { type: 'game:start' }                                    // marks room started (no refunds after)
-//   { type: 'game:over', winnerUid }                          // server validates later
-//   { type: 'winner:backToLobby' }                            // triggers payout to winner (once)
-//
-// Server -> Client message samples:
-//   { type: 'auth:ok', uid, email }
-//   { type: 'error', code, message }
-//   { type: 'coins:update', coins }
-//   { type: 'room:update', room }
-//   { type: 'toast', level: 'info'|'error'|'success', message }
-
 const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const fs = require('fs');
 const admin = require('firebase-admin');
 
-const svcPath = './serviceAccountKey.json';
-if (!fs.existsSync(svcPath)) {
-  console.error('Missing serviceAccountKey.json next to server.js');
-  process.exit(1);
+function initFirebaseAdmin() {
+  // Single base64 env with full JSON
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
+    const creds = JSON.parse(Buffer.from(
+      process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64'
+    ).toString('utf8'));
+    const databaseURL =
+      process.env.FIREBASE_DATABASE_URL ||
+      `https://${creds.project_id}-default-rtdb.firebaseio.com`;
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId:  creds.project_id || creds.projectId,
+        clientEmail: creds.client_email || creds.clientEmail,
+        privateKey:  (creds.private_key || creds.privateKey)
+      }),
+      databaseURL,
+    });
+    return;
+  }
+
+  // Split envs fallback
+  if (process.env.FIREBASE_PROJECT_ID &&
+      process.env.FIREBASE_CLIENT_EMAIL &&
+      process.env.FIREBASE_PRIVATE_KEY) {
+    const databaseURL =
+      process.env.FIREBASE_DATABASE_URL ||
+      `https://${process.env.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com`;
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId:  process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey:  process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      }),
+      databaseURL,
+    });
+    return;
+  }
+
+  // ADC fallback if you ever set GOOGLE_APPLICATION_CREDENTIALS on the host
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    admin.initializeApp({
+      credential: admin.credential.applicationDefault(),
+      databaseURL: process.env.FIREBASE_DATABASE_URL,
+    });
+    return;
+  }
+
+  console.warn('[firebase-admin] No credentials found; initializing default app()');
+  admin.initializeApp();
 }
 
-// ---- Firebase Admin init (no envs; uses your serviceAccountKey.json) ----
-admin.initializeApp({
-  credential: admin.credential.cert(require(svcPath)),
-  databaseURL: `https://${require(svcPath).project_id}-default-rtdb.firebaseio.com`
-});
+initFirebaseAdmin();
 const rtdb = admin.database();
 
 // ---- HTTP + WS ----
@@ -80,9 +95,8 @@ const txRef = (uid, txId) => rtdb.ref(`/tx/${uid}/${txId}`);
 const roomPaidRef = (roomId, uid) => rtdb.ref(`/rooms/${roomId}/paid/${uid}`);
 const payoutsRef = (roomId) => rtdb.ref(`/payouts/${roomId}`);
 
-
-function send(ws, obj) {
-  try { ws.send(JSON.stringify(obj)); } catch (_) {}
+function send(ws, msg) {
+  try { ws.send(JSON.stringify(msg)); } catch {}
 }
 function broadcastRoom(room, msg) {
   for (const p of room.players) if (p.ws.readyState === 1) send(p.ws, msg);
