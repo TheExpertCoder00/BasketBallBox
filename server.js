@@ -333,8 +333,20 @@ function leaveCurrentRoom(ws) {
 wss.on('connection', (ws) => {
   if (ws._socket?.setNoDelay) ws._socket.setNoDelay(true);
 
-  // per-connection state
-  ws._roomId = null;
+  // When a client joins a room and you push it into room.players:
+  ws._id = ws._id || Math.random().toString(36).slice(2);
+  ws._roomId = roomId;
+  room.players.add(ws);
+
+  // Tell both clients each other's ids (used on client to know who's who)
+  for (const peer of room.players) {
+    if (peer.readyState !== 1) continue;
+    peer.send(JSON.stringify({
+      type: 'roster',
+      players: [...room.players].map(p => ({ id: p._id }))
+    }));
+  }
+
   ws._role = null;
   ws._authState = 'guest'; // 'guest' | 'pending' | 'confirmed' | 'unauthenticated'
   ws._user = null;
@@ -521,18 +533,34 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // ----- POSITION SYNC -----
     if (data.type === 'pos') {
+      // Basic validation
+      if (!ws._roomId) return;
       const room = rooms.get(ws._roomId);
       if (!room) return;
-      broadcastRoom(room, {
-        type: 'pos',
-        role: ws._role,
-        x: data.x,
-        y: data.y,
-        z: data.z,
-        rotY: data.rotY
-      }, ws);
+
+      // Optionally store last known position on the server (handy for late joins)
+      ws._px = Number(data.x) || 0;
+      ws._py = Number(data.y) || 0;
+      ws._pz = Number(data.z) || 0;
+      ws._ry = Number(data.rotY) || 0;
+
+      // Re-broadcast to everyone *else* in the room
+      for (const peer of room.players) {
+        if (peer === ws || peer.readyState !== 1) continue;
+        peer.send(JSON.stringify({
+          type: 'pos',
+          from: ws._id,         // unique id per socket
+          x: ws._px,
+          y: ws._py,
+          z: ws._pz,
+          rotY: ws._ry
+        }));
+      }
+      return; // handled
     }
+
 
     if (data.type === 'score') {
       // expect: { by: 'player1'|'player2', points: 1|2|3 }
