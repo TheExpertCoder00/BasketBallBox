@@ -1,61 +1,46 @@
+// server.js
+// BasketballBox WebSocket + Firebase coin escrow/payouts (drop-in)
+//
+// Requirements: serviceAccountKey.json at project root (same folder).
+// Firebase DB structure used:
+//   /users/{uid}/coins : number
+//   /rooms/{roomId}/paid/{uid} : true once escrow taken
+//   /payouts/{roomId} : { done: true, at: ts, winner: uid } to prevent double payout
+//   /tx/{uid}/{txId} : { type, amount, roomId, at } simple ledger
+//
+// Client protocol (messages from client -> server):
+//   { type: 'auth', idToken }
+//   { type: 'lobby:create', name, mode, wager }              // mode: 'casual' | 'competitive'
+//   { type: 'lobby:join', roomId }                            // triggers escrow if competitive
+//   { type: 'lobby:leave' }                                   // may refund if pre-start and paid
+//   { type: 'game:start' }                                    // marks room started (no refunds after)
+//   { type: 'game:over', winnerUid }                          // server validates later
+//   { type: 'winner:backToLobby' }                            // triggers payout to winner (once)
+//
+// Server -> Client message samples:
+//   { type: 'auth:ok', uid, email }
+//   { type: 'error', code, message }
+//   { type: 'coins:update', coins }
+//   { type: 'room:update', room }
+//   { type: 'toast', level: 'info'|'error'|'success', message }
+
 const http = require('http');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const fs = require('fs');
 const admin = require('firebase-admin');
 
-function initFirebaseAdmin() {
-  // Single base64 env with full JSON
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
-    const creds = JSON.parse(Buffer.from(
-      process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64'
-    ).toString('utf8'));
-    const databaseURL =
-      process.env.FIREBASE_DATABASE_URL ||
-      `https://${creds.project_id}-default-rtdb.firebaseio.com`;
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId:  creds.project_id || creds.projectId,
-        clientEmail: creds.client_email || creds.clientEmail,
-        privateKey:  (creds.private_key || creds.privateKey)
-      }),
-      databaseURL,
-    });
-    return;
-  }
-
-  // Split envs fallback
-  if (process.env.FIREBASE_PROJECT_ID &&
-      process.env.FIREBASE_CLIENT_EMAIL &&
-      process.env.FIREBASE_PRIVATE_KEY) {
-    const databaseURL =
-      process.env.FIREBASE_DATABASE_URL ||
-      `https://${process.env.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com`;
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId:  process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey:  process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      }),
-      databaseURL,
-    });
-    return;
-  }
-
-  // ADC fallback if you ever set GOOGLE_APPLICATION_CREDENTIALS on the host
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    admin.initializeApp({
-      credential: admin.credential.applicationDefault(),
-      databaseURL: process.env.FIREBASE_DATABASE_URL,
-    });
-    return;
-  }
-
-  console.warn('[firebase-admin] No credentials found; initializing default app()');
-  admin.initializeApp();
+const svcPath = './serviceAccountKey.json';
+if (!fs.existsSync(svcPath)) {
+  console.error('Missing serviceAccountKey.json next to server.js');
+  process.exit(1);
 }
 
-initFirebaseAdmin();
+// ---- Firebase Admin init (no envs; uses your serviceAccountKey.json) ----
+admin.initializeApp({
+  credential: admin.credential.cert(require(svcPath)),
+  databaseURL: `https://${require(svcPath).project_id}-default-rtdb.firebaseio.com`
+});
 const rtdb = admin.database();
 
 // ---- HTTP + WS ----
@@ -95,8 +80,9 @@ const txRef = (uid, txId) => rtdb.ref(`/tx/${uid}/${txId}`);
 const roomPaidRef = (roomId, uid) => rtdb.ref(`/rooms/${roomId}/paid/${uid}`);
 const payoutsRef = (roomId) => rtdb.ref(`/payouts/${roomId}`);
 
-function send(ws, msg) {
-  try { ws.send(JSON.stringify(msg)); } catch {}
+
+function send(ws, obj) {
+  try { ws.send(JSON.stringify(obj)); } catch (_) {}
 }
 function broadcastRoom(room, msg) {
   for (const p of room.players) if (p.ws.readyState === 1) send(p.ws, msg);
@@ -250,13 +236,20 @@ function emitRoomUpdate(room) {
   }});
 }
 
-// ---- Connection handling ----
+// ---- Connection handling (guest-friendly) ----
 wss.on('connection', (ws) => {
   if (ws._socket?.setNoDelay) ws._socket.setNoDelay(true);
-  ws._uid = null;
+
+  // --- guest identity by default ---
+  const makeGuestId = () => `guest_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  ws._uid = makeGuestId();         // becomes real uid after auth
+  ws._isAuthed = false;            // flips to true after auth
+  ws._role = 'guest';              // 'guest' | 'user'
   ws._roomId = null;
 
   send(ws, { type: 'toast', level: 'info', message: 'Connected to server.' });
+  // Guests can browse lobby immediately
+  try { pushLobby(ws); } catch {}
 
   ws.on('message', async (raw) => {
     let data = null;
@@ -264,34 +257,47 @@ wss.on('connection', (ws) => {
     const t = data?.type;
 
     try {
-      // ---------- AUTH ----------
+      // ---------- AUTH (optional upgrade) ----------
       if (t === 'auth') {
         const token = data.idToken;
         if (!token) return send(ws, { type: 'error', code: 'NO_TOKEN', message: 'Missing idToken' });
-        const decoded = await admin.auth().verifyIdToken(token);
-        ws._uid = decoded.uid;
+        try {
+          const decoded = await admin.auth().verifyIdToken(token);
+          ws._uid = decoded.uid;
+          ws._isAuthed = true;
+          ws._role = 'user';
 
-        // greet + lobby list + coins
-        send(ws, { type: 'auth:ok', uid: decoded.uid, email: decoded.email || null });
-        pushLobby(ws);
-        const balSnap = await coinsRef(ws._uid).get();
-        send(ws, { type: 'coins:update', coins: Number(balSnap.val() || 0) });
+          send(ws, { type: 'auth:ok', uid: decoded.uid, email: decoded.email || null });
+          pushLobby(ws);
+          const balSnap = await coinsRef(ws._uid).get();
+          send(ws, { type: 'coins:update', coins: Number(balSnap.val() || 0) });
+        } catch (e) {
+          return send(ws, { type: 'error', code: 'AUTH_FAIL', message: 'Invalid login.' });
+        }
         return;
       }
 
-      // Require auth after here
-      if (!ws._uid) return send(ws, { type: 'error', code: 'UNAUTH', message: 'Authenticate first.' });
+      // Helper: only competitive/wagered actions need auth
+      const requiresAuthForRoomParams = ({ mode, wager }) =>
+        (mode === 'competitive') || (Number(wager) > 0);
 
       // ---------- LOBBY CREATE ----------
       if (t === 'lobby:create') {
-        const { name = 'Room', mode = 'casual', wager = 0 } = data || {};
+        let { name = 'Room', mode = 'casual', wager = 0 } = data || {};
+        wager = Number(wager) || 0;
+
+        if (requiresAuthForRoomParams({ mode, wager }) && !ws._isAuthed) {
+          // no UNAUTH loop; single gentle error
+          return send(ws, { type: 'error', code: 'LOGIN_REQUIRED', message: 'Login required for competitive/wagered rooms.' });
+        }
+
         const room = makeRoom({ name, mode, wager });
         send(ws, { type: 'toast', level: 'success', message: `Room created: ${room.name}` });
         pushLobby(ws);
         return;
       }
 
-      // ---------- LOBBY JOIN (escrow happens here for competitive) ----------
+      // ---------- LOBBY JOIN (escrow only for competitive/wagered) ----------
       if (t === 'lobby:join') {
         const { roomId } = data || {};
         const room = findRoom(roomId);
@@ -302,20 +308,25 @@ wss.on('connection', (ws) => {
 
         const uid = ws._uid;
 
-        // Escrow if competitive
-        try {
-          const esc = await escrowIfNeeded(room, uid);
-          if (!esc.ok && esc.code === 'BAD_WAGER') return send(ws, { type:'error', code:esc.code, message: esc.message });
-          if (!esc.ok && esc.message === 'INSUFFICIENT_COINS') {
-            return send(ws, { type: 'error', code: 'INSUFFICIENT_COINS', message: 'Not enough coins for wager.' });
+        // Competitive / wagered rooms require login + escrow
+        if ((room.mode === 'competitive' || Number(room.wager) > 0)) {
+          if (!ws._isAuthed) {
+            return send(ws, { type: 'error', code: 'LOGIN_REQUIRED', message: 'Login required to join competitive/wagered rooms.' });
           }
-          if (esc.coins != null) send(ws, { type: 'coins:update', coins: esc.coins });
-        } catch (e) {
-          const msg = (e && e.message) || 'Escrow failed';
-          if (msg === 'INSUFFICIENT_COINS') {
-            return send(ws, { type: 'error', code: 'INSUFFICIENT_COINS', message: 'Not enough coins for wager.' });
+          try {
+            const esc = await escrowIfNeeded(room, uid);
+            if (!esc.ok && esc.code === 'BAD_WAGER') return send(ws, { type:'error', code:esc.code, message: esc.message });
+            if (!esc.ok && esc.message === 'INSUFFICIENT_COINS') {
+              return send(ws, { type: 'error', code: 'INSUFFICIENT_COINS', message: 'Not enough coins for wager.' });
+            }
+            if (esc.coins != null) send(ws, { type: 'coins:update', coins: esc.coins });
+          } catch (e) {
+            const msg = (e && e.message) || 'Escrow failed';
+            if (msg === 'INSUFFICIENT_COINS') {
+              return send(ws, { type: 'error', code: 'INSUFFICIENT_COINS', message: 'Not enough coins for wager.' });
+            }
+            return send(ws, { type: 'error', code: 'ESCROW_FAIL', message: msg });
           }
-          return send(ws, { type: 'error', code: 'ESCROW_FAIL', message: msg });
         }
 
         room.players.push({ uid, ws });
@@ -337,9 +348,9 @@ wss.on('connection', (ws) => {
         if (room) {
           removePlayer(room, uid);
 
-          // refund only if competitive, not started and escrowed
-          if (room.mode === 'competitive' && !room.started) {
-            await refundIfEscrowed(room, uid, 'refund');
+          // refund only if competitive/wagered, not started and escrowed
+          if ((room.mode === 'competitive' || Number(room.wager) > 0) && !room.started) {
+            try { await refundIfEscrowed(room, uid, 'refund'); } catch {}
           }
 
           emitRoomUpdate(room);
@@ -347,12 +358,12 @@ wss.on('connection', (ws) => {
           // clean empty room
           if (room.players.length === 0) {
             // also ensure refunds to any leftover paid players just in case
-            if (room.mode === 'competitive' && !room.started) {
+            if ((room.mode === 'competitive' || Number(room.wager) > 0) && !room.started) {
               const paidSnap = await rtdb.ref(`/rooms/${room.id}/paid`).get();
               if (paidSnap.exists()) {
                 const paidMap = paidSnap.val();
                 for (const pUid of Object.keys(paidMap)) {
-                  await refundIfEscrowed(room, pUid, 'refund');
+                  try { await refundIfEscrowed(room, pUid, 'refund'); } catch {}
                 }
               }
             }
@@ -396,6 +407,18 @@ wss.on('connection', (ws) => {
         const room = findRoom(ws._roomId);
         if (!room) return send(ws, { type: 'error', code: 'NO_ROOM', message: 'Room not found.' });
 
+        // Only relevant for competitive/wagered rooms
+        if (!(room.mode === 'competitive' || Number(room.wager) > 0)) {
+          // casual: just cleanly return to lobby
+          ws._roomId = null;
+          emitRoomUpdate(room);
+          return;
+        }
+
+        if (!ws._isAuthed) {
+          return send(ws, { type: 'error', code: 'LOGIN_REQUIRED', message: 'Login required to claim payout.' });
+        }
+
         const callerUid = ws._uid;
         if (!room._reportedWinner || room._reportedWinner !== callerUid) {
           return send(ws, { type: 'error', code: 'NOT_WINNER', message: 'Only the winner can claim payout.' });
@@ -423,7 +446,7 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // Unknown message type
+      // ---------- Unknown message type ----------
       send(ws, { type: 'error', code: 'BAD_TYPE', message: `Unknown type: ${t}` });
 
     } catch (err) {
@@ -443,8 +466,8 @@ wss.on('connection', (ws) => {
     // Remove player
     removePlayer(room, uid);
 
-    // If competitive & not started => refund their escrow
-    if (room.mode === 'competitive' && !room.started) {
+    // If competitive/wagered & not started => refund their escrow
+    if ((room.mode === 'competitive' || Number(room.wager) > 0) && !room.started) {
       try { await refundIfEscrowed(room, uid, 'refund'); } catch {}
     }
 
@@ -453,12 +476,12 @@ wss.on('connection', (ws) => {
     // Clean up empty room
     if (room.players.length === 0) {
       // Refund any paid flags if not started
-      if (room.mode === 'competitive' && !room.started) {
+      if ((room.mode === 'competitive' || Number(room.wager) > 0) && !room.started) {
         const paidSnap = await rtdb.ref(`/rooms/${room.id}/paid`).get();
         if (paidSnap.exists()) {
           const paidMap = paidSnap.val();
           for (const pUid of Object.keys(paidMap)) {
-            await refundIfEscrowed(room, pUid, 'refund');
+            try { await refundIfEscrowed(room, pUid, 'refund'); } catch {}
           }
         }
       }
@@ -467,6 +490,3 @@ wss.on('connection', (ws) => {
     }
   });
 });
-
-
-
