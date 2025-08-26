@@ -335,8 +335,6 @@ wss.on('connection', (ws) => {
 
   // When a client joins a room and you push it into room.players:
   ws._id = ws._id || Math.random().toString(36).slice(2);
-  ws._roomId = roomId;
-  room.players.add(ws);
 
   // Tell both clients each other's ids (used on client to know who's who)
   for (const peer of room.players) {
@@ -348,6 +346,7 @@ wss.on('connection', (ws) => {
   }
 
   ws._role = null;
+  ws._roomid = null;
   ws._authState = 'guest'; // 'guest' | 'pending' | 'confirmed' | 'unauthenticated'
   ws._user = null;
 
@@ -623,3 +622,4 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`WS server listening on :${PORT}`);
 });
+
