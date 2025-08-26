@@ -340,6 +340,7 @@ wss.on('connection', (ws) => {
   ws._role = null;
   ws._authState = 'guest'; // 'guest' | 'pending' | 'confirmed' | 'unauthenticated'
   ws._user = null;
+  ws._roomId = null;
 
   // send initial lobby snapshot
   ws.send(JSON.stringify({ type: 'rooms', rooms: summarizeRooms() }));
