@@ -545,7 +545,13 @@ wss.on('connection', (ws) => {
       if (!by) return;
 
       room.scores[by] = Math.max(0, room.scores[by] + pts);
-      broadcastRoom(room, { type: 'score', scores: room.scores });
+      broadcastRoom(room, { 
+        type: 'score', 
+        by,                // 'player1' | 'player2'
+        points: pts,       // 1 | 2 | 3
+        scores: room.scores
+      });
+
 
       // possession flips after score
       room.offenseRole = otherRole(by);
@@ -557,7 +563,6 @@ wss.on('connection', (ws) => {
       broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
       sendBall(room);
 
-      // inside the data.type === 'score' block, where you detect gameOver
       if (room.scores[by] >= room.toWin) {
         const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
 
@@ -599,3 +604,4 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`WS server listening on :${PORT}`);
 });
+
