@@ -521,6 +521,19 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (data.type === 'pos') {
+      const room = rooms.get(ws._roomId);
+      if (!room) return;
+      broadcastRoom(room, {
+        type: 'pos',
+        role: ws._role,
+        x: data.x,
+        y: data.y,
+        z: data.z,
+        rotY: data.rotY
+      }, ws);
+    }
+
     if (data.type === 'score') {
       // expect: { by: 'player1'|'player2', points: 1|2|3 }
       const by = (data.by === 'player1' || data.by === 'player2') ? data.by : null;
