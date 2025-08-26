@@ -460,6 +460,42 @@ wss.on('connection', (ws) => {
         return;
       }
 
+      // ---------- REALTIME FORWARDERS (no auth required) ----------
+      if (t === 'position') {
+        const room = findRoom(ws._roomId);
+        if (!room) return; // ignore quietly
+        // validate & forward to everyone else
+        const { x, y, z, ry, seq } = data;
+        for (const p of room.players) {
+          if (p.ws !== ws && p.ws.readyState === 1) {
+            send(p.ws, { type:'position', x, y, z, ry, seq });
+          }
+        }
+        return;
+      }
+
+      if (t === 'ball') {
+        const room = findRoom(ws._roomId);
+        if (!room) return;
+        const { x, y, z, vx, vy, vz, seq } = data;
+        for (const p of room.players) {
+          if (p.ws !== ws && p.ws.readyState === 1) {
+            send(p.ws, { type:'ball', x, y, z, vx, vy, vz, seq });
+          }
+        }
+        return;
+      }
+
+      // Optional: forward a few other gameplay signals you use
+      if (t === 'ballOwner' || t === 'ballSim' || t === 'animation') {
+        const room = findRoom(ws._roomId);
+        if (!room) return;
+        for (const p of room.players) {
+          if (p.ws !== ws && p.ws.readyState === 1) send(p.ws, data);
+        }
+        return;
+      }
+
       // ---------- Unknown message type ----------
       send(ws, { type: 'error', code: 'BAD_TYPE', message: `Unknown type: ${t}` });
 
