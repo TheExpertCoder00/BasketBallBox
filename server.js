@@ -61,6 +61,8 @@ function initFirebaseAdmin() {
 initFirebaseAdmin();
 const rtdb = admin.database();
 
+const PHASE = { PLAY: 'PLAY', SCORE_FREEZE: 'SCORE_FREEZE' };
+
 // Basic HTTP (health)
 const server = http.createServer((req, res) => {
   res.writeHead(200);
@@ -80,34 +82,42 @@ function makeRoom(id, name, mode = 'casual') {
   return {
     id,
     name,
-    mode,              // 'casual' | 'competitive'
+    mode,                     // 'casual' | 'competitive'
     maxPlayers: 2,
-    players: [],       // [{ ws, id: 1|2, role: 'player1'|'player2', ready: bool }]
+    players: [],              // [{ ws, id: 1|2, role: 'player1'|'player2', ready: bool }]
     private: false,
     passwordHash: null,
+
+    // match config
     toWin: 11,
+    wager: 0,                 // keep only once
+    matchId: null,
+
+    // auth/IDs
+    playerUids: { player1: null, player2: null },
+
+    // score
     scores: { player1: 0, player2: 0 },
-    wager: 0,
 
     // roles & possession
     offenseRole: null,
     defenseRole: null,
-    ballOwnerRole: null,     // 'player1'|'player2'|null
-    lastShooterRole: null,
+    ballOwnerRole: null,      // 'player1'|'player2'|null
+    lastShooterRole: null,    // set on release to know who shot
 
-    playerUids: { player1: null, player2: null },
-    wager: 0,               // already present if you kept it
-    matchId: null,
-
-    // ball state (authoritative)
+    // authoritative ball state
     ball: { x: 0, y: 0.25, z: 0, vx: 0, vy: 0, vz: 0, held: false },
     ballSeq: 0,
 
-    // sim
+    // server sim
     sim: { active: false, timer: null },
 
     // coin flow
-    coin: { pending: false, callerRole: null, call: null, timer: null }
+    coin: { pending: false, callerRole: null, call: null, timer: null },
+
+    // === NEW: scoring/flow control ===
+    phase: PHASE.PLAY,        // PLAY | SCORE_FREEZE
+    freezeUntil: 0            // ms timestamp; while now < freezeUntil, inputs ignored
   };
 }
 
@@ -144,12 +154,95 @@ function broadcastRoom(room, payload, exceptWs = null) {
 
 function otherRole(role) { return role === 'player1' ? 'player2' : 'player1'; }
 
-function deleteRoomIfEmpty(room) {
-  if (room.players.length === 0) {
-    rooms.delete(room.id);
-    broadcastToLobby();
+
+
+function snapshotBall(room) {
+  const b = room.ball;
+  return { x:b.x, y:b.y, z:b.z, vx:b.vx, vy:b.vy, vz:b.vz, held: !!b.held, owner: room.ballOwnerRole };
+}
+
+// Very simple hoop volumes – tweak to your coordinates.
+// Assumes two hoops centered on ±Z with a small radius near rim height.
+function didBallJustScore(room) {
+  const b = room.ball;
+  const rimY = 3.05;       // ~10 ft in meters; adjust to your units
+  const tolY = 0.35;       // vertical tolerance around rim plane
+  const rimR = 0.25;       // hoop radius tolerance
+
+  // Example: player1 scores in player2 hoop at +Z; player2 scores in -Z.
+  // Change Z locations/ranges to match your court coordinates.
+  const hoopZ = 12;        // distance to hoop from center (example)
+  const zTol  = 0.60;
+
+  // Near either hoop plane?
+  const nearPlusZ  = Math.abs(b.z - (+hoopZ)) < zTol;
+  const nearMinusZ = Math.abs(b.z - (-hoopZ)) < zTol;
+  const nearRimY   = Math.abs(b.y - rimY) < tolY;
+
+  // Rough "inside ring" proxy: distance to backboard center line in X (no board yet)
+  const inRingX = Math.abs(b.x - 0) < rimR;
+
+  // Fire only ONCE per crossing; you can refine with a "justCrossed" flag if needed
+  return (nearRimY && inRingX && (nearPlusZ || nearMinusZ));
+}
+
+function handleServerScore(room) {
+  // Decide who gets the points
+  const scorerRole = room.lastShooterRole || room.ballOwnerRole || room.offenseRole || 'player1';
+  room.scores[scorerRole] = Math.max(0, (room.scores[scorerRole] || 0) + 1);
+
+  // Freeze world & neutralize ball
+  room.phase = PHASE.SCORE_FREEZE;
+  room.freezeUntil = Date.now() + 1800;
+
+  // Clear possession immediately; give back on resume or inbound
+  room.ballOwnerRole = null;
+  room.ball.held = false;
+  stopBallSim(room);
+  // Move ball to center (or any neutral inbound spot you prefer)
+  room.ball.x = 0; room.ball.y = 1.2; room.ball.z = 0;
+  room.ball.vx = room.ball.vy = room.ball.vz = 0;
+
+  // Flip possession for next play (winner goes to defense by your old logic)
+  const possessionNext = otherRole(scorerRole);
+  room.offenseRole = possessionNext;
+  room.defenseRole = scorerRole;
+
+  // Tell both clients exactly what happened
+  broadcastRoom(room, {
+    type: 'score',
+    phase: room.phase,
+    scorer: scorerRole,
+    scores: room.scores,
+    possessionNext,
+    freezeMs: 1800,
+    ball: snapshotBall(room)
+  });
+
+  // Game over check using your existing toWin logic:
+  if (room.scores[scorerRole] >= room.toWin) {
+    const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
+    broadcastRoom(room, {
+      type: 'gameOver',
+      winner: scorerRole,
+      final: room.scores,
+      totalPayout: payout,
+      matchId: room.matchId
+    });
+
+    setTimeout(() => {
+      for (const p of room.players) {
+        if (p.ws.readyState === WebSocket.OPEN) {
+          p.ws.send(JSON.stringify({ type: 'roomClosed', reason: 'gameOver' }));
+        }
+      }
+      room.players = [];
+      rooms.delete(room.id);
+      broadcastToLobby();
+    }, 250);
   }
 }
+
 
 // ----------------- Ball Sim -----------------
 const TICK_MS = 1000 / 60;
@@ -175,6 +268,28 @@ function startBallSim(room) {
 
   room.sim.timer = setInterval(() => {
     const b = room.ball;
+
+    // ⬇️ ADD THIS CHECK AT THE TOP OF EACH TICK
+    const now = Date.now();
+
+    // End freeze when timer expires
+    if (room.phase === PHASE.SCORE_FREEZE && now >= room.freezeUntil) {
+      room.phase = PHASE.PLAY;
+      broadcastRoom(room, {
+        type: 'resume',
+        phase: room.phase,
+        scores: room.scores,
+        ball: snapshotBall(room)
+      });
+    }
+
+    // Detect score if ball is airborne during PLAY
+    if (room.phase === PHASE.PLAY && !b.held && didBallJustScore(room)) {
+      handleServerScore(room);
+      return; // stop further motion this tick (ball reset inside handler)
+    }
+
+    // --- your existing physics ---
     b.vy -= G_PER_TICK;
     b.x += b.vx; b.y += b.vy; b.z += b.vz;
 
@@ -347,6 +462,13 @@ wss.on('connection', (ws) => {
     let data;
     try { data = JSON.parse(msg.toString()); } catch { return; }
     if (!data || typeof data.type !== 'string') return;
+    
+    // Block gameplay-changing inputs during freeze
+    const r = ws._roomId ? rooms.get(ws._roomId) : null;
+    if (r && r.phase === PHASE.SCORE_FREEZE) {
+      // allow only lobby/chat/non-gameplay stuff while frozen
+      if (['pickupBall','releaseBall','ball','pos'].includes(data.type)) return;
+    }
 
     // --- Auth (server-side with Firebase Admin) ---
     if (data.type === 'auth') {
@@ -539,48 +661,48 @@ wss.on('connection', (ws) => {
     }
 
     if (data.type === 'score') {
-      // expect: { by: 'player1'|'player2', points: 1|2|3 }
-      const by = (data.by === 'player1' || data.by === 'player2') ? data.by : null;
-      const pts = Number(data.points) || 1;
-      if (!by) return;
+      // // expect: { by: 'player1'|'player2', points: 1|2|3 }
+      // const by = (data.by === 'player1' || data.by === 'player2') ? data.by : null;
+      // const pts = Number(data.points) || 1;
+      // if (!by) return;
 
-      room.scores[by] = Math.max(0, room.scores[by] + pts);
-      broadcastRoom(room, { type: 'score', scores: room.scores });
+      // room.scores[by] = Math.max(0, room.scores[by] + pts);
+      // broadcastRoom(room, { type: 'score', scores: room.scores });
 
-      // possession flips after score
-      room.offenseRole = otherRole(by);
-      room.defenseRole = by;
-      room.ballOwnerRole = room.offenseRole;
-      room.ball.held = true;
-      stopBallSim(room);
-      broadcastRoom(room, { type: 'possession', offense: room.offenseRole, defense: room.defenseRole });
-      broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
-      sendBall(room);
+      // // possession flips after score
+      // room.offenseRole = otherRole(by);
+      // room.defenseRole = by;
+      // room.ballOwnerRole = room.offenseRole;
+      // room.ball.held = true;
+      // stopBallSim(room);
+      // broadcastRoom(room, { type: 'possession', offense: room.offenseRole, defense: room.defenseRole });
+      // broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
+      // sendBall(room);
 
-      // inside the data.type === 'score' block, where you detect gameOver
-      if (room.scores[by] >= room.toWin) {
-        const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
+      // // inside the data.type === 'score' block, where you detect gameOver
+      // if (room.scores[by] >= room.toWin) {
+      //   const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
 
-        broadcastRoom(room, {
-          type: 'gameOver',
-          winner: by,
-          final: room.scores,
-          totalPayout: payout,
-          matchId: room.matchId
-        });
+      //   broadcastRoom(room, {
+      //     type: 'gameOver',
+      //     winner: by,
+      //     final: room.scores,
+      //     totalPayout: payout,
+      //     matchId: room.matchId
+      //   });
 
-        setTimeout(() => {
-          for (const p of room.players) {
-            if (p.ws.readyState === WebSocket.OPEN) {
-              p.ws.send(JSON.stringify({ type: 'roomClosed', reason: 'gameOver' }));
-            }
-          }
-          room.players = [];
-          rooms.delete(room.id);
-          broadcastToLobby();
-        }, 250);
-        return;
-      }
+      //   setTimeout(() => {
+      //     for (const p of room.players) {
+      //       if (p.ws.readyState === WebSocket.OPEN) {
+      //         p.ws.send(JSON.stringify({ type: 'roomClosed', reason: 'gameOver' }));
+      //       }
+      //     }
+      //     room.players = [];
+      //     rooms.delete(room.id);
+      //     broadcastToLobby();
+      //   }, 250);
+      //   return;
+      // }
       return;
     }
   });
