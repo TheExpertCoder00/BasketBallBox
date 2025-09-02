@@ -165,29 +165,31 @@ function snapshotBall(room) {
   return { x:b.x, y:b.y, z:b.z, vx:b.vx, vy:b.vy, vz:b.vz, held: !!b.held, owner: room.ballOwnerRole };
 }
 
-// Very simple hoop volumes – tweak to your coordinates.
-// Assumes two hoops centered on ±Z with a small radius near rim height.
+// Server-side hoop check tuned to client scene:
+// HOOP_POS = (x=0, y=2.6, z=-6.6)
 function didBallJustScore(room) {
   const b = room.ball;
-  const rimY = 3.05;       // ~10 ft in meters; adjust to your units
-  const tolY = 0.35;       // vertical tolerance around rim plane
-  const rimR = 0.25;       // hoop radius tolerance
 
-  // Example: player1 scores in player2 hoop at +Z; player2 scores in -Z.
-  // Change Z locations/ranges to match your court coordinates.
-  const hoopZ = 12;        // distance to hoop from center (example)
-  const zTol  = 0.60;
+  // Match client hoop center
+  const HOOP_X = 0.0;
+  const HOOP_Y = 2.6;
+  const HOOP_Z = -6.6;
 
-  // Near either hoop plane?
-  const nearPlusZ  = Math.abs(b.z - (+hoopZ)) < zTol;
-  const nearMinusZ = Math.abs(b.z - (-hoopZ)) < zTol;
-  const nearRimY   = Math.abs(b.y - rimY) < tolY;
+  // Tolerances: keep a forgiving window so minor desync still counts
+  const X_TOL = 0.40;  // “ring width” horizontally
+  const Z_TOL = 0.80;  // depth window around hoop plane
+  const Y_TOL = 0.60;  // around rim height (we’ll also require vy < 0)
+  const FLOOR_MIN_Y = 1.5; // ignore stuff bouncing near the floor
 
-  // Rough "inside ring" proxy: distance to backboard center line in X (no board yet)
-  const inRingX = Math.abs(b.x - 0) < rimR;
+  const nearX = Math.abs(b.x - HOOP_X) <= X_TOL;
+  const nearZ = Math.abs(b.z - HOOP_Z) <= Z_TOL;
+  const nearY = Math.abs(b.y - HOOP_Y) <= Y_TOL;
 
-  // Fire only ONCE per crossing; you can refine with a "justCrossed" flag if needed
-  return (nearRimY && inRingX && (nearPlusZ || nearMinusZ));
+  const downward = b.vy < 0;          // crossing down through the rim plane
+  const aboveFloor = b.y > FLOOR_MIN_Y;
+
+  // Ball must be free (not held), within the hoop window, moving downward
+  return !b.held && nearX && nearZ && nearY && downward && aboveFloor;
 }
 
 function handleServerScore(room) {
