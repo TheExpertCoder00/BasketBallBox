@@ -7,6 +7,10 @@ const PORT = process.env.PORT || 8080;
 
 const admin = require('firebase-admin');
 
+// ms since process start
+const SERVER_EPOCH = Date.now();
+const getServerTime = () => Date.now() - SERVER_EPOCH;
+
 function initFirebaseAdmin() {
   // Single base64 env with full JSON
   if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
@@ -249,17 +253,20 @@ const TICK_MS = 1000 / 60;
 const G_PER_TICK = 0.01;
 const GROUND_Y = 0.25;
 
+
 function sendBall(room, exceptWs = null) {
   room.ballSeq++;
   const b = room.ball;
   broadcastRoom(room, {
     type: 'ball',
+    serverTime: getServerTime(),
     seq: room.ballSeq,
     x: b.x, y: b.y, z: b.z,
     vx: b.vx, vy: b.vy, vz: b.vz,
     held: b.held
   }, exceptWs);
 }
+
 
 function startBallSim(room) {
   if (room.sim.active) return;
@@ -462,6 +469,16 @@ wss.on('connection', (ws) => {
     let data;
     try { data = JSON.parse(msg.toString()); } catch { return; }
     if (!data || typeof data.type !== 'string') return;
+    
+    // === ping/pong (never blocked by freeze/lobby/auth) ===
+    if (data.type === 'ping') {
+      ws.send(JSON.stringify({
+        type: 'pong',
+        clientTime: data.clientTime,
+        serverTime: getServerTime()
+      }));
+      return;
+    }
     
     // Block gameplay-changing inputs during freeze
     const r = ws._roomId ? rooms.get(ws._roomId) : null;
