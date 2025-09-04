@@ -222,6 +222,30 @@ function handleServerScore(room) {
   room.ball.x = 0; room.ball.y = 1.2; room.ball.z = 0;
   room.ball.vx = room.ball.vy = room.ball.vz = 0;
 
+  setTimeout(() => {
+    // flip to PLAY
+    room.phase = PHASE.PLAY;
+
+    // give ball to the next offense and mark held=true so they can move immediately
+    room.ballOwnerRole = room.offenseRole;   // offenseRole was set to possessionNext below
+    room.ball.held = true;
+
+    // (optional) move ball to the offense player's hand-ish start spot you prefer
+    // keep neutral if you inbound instead
+
+    broadcastRoom(room, {
+      type: 'resume',
+      phase: room.phase,
+      scores: room.scores,
+      ball: snapshotBall(room)
+    });
+
+    // also tell clients who owns the ball now
+    broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
+
+  }, 1800);
+
+
   // Flip possession for next play (winner goes to defense by your old logic)
   const possessionNext = otherRole(scorerRole);
   room.offenseRole = possessionNext;
@@ -753,4 +777,3 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`WS server listening on :${PORT}`);
 });
-
