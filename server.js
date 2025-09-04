@@ -165,8 +165,6 @@ function snapshotBall(room) {
   return { x:b.x, y:b.y, z:b.z, vx:b.vx, vy:b.vy, vz:b.vz, held: !!b.held, owner: room.ballOwnerRole };
 }
 
-// Server-side hoop check tuned to client scene:
-// HOOP_POS = (x=0, y=2.6, z=-6.6)
 function didBallJustScore(room) {
   const b = room.ball;
 
@@ -191,6 +189,7 @@ function didBallJustScore(room) {
   // Ball must be free (not held), within the hoop window, moving downward
   return !b.held && nearX && nearZ && nearY && downward && aboveFloor;
 }
+
 
 function handleServerScore(room) {
   // Decide who gets the points
@@ -680,48 +679,6 @@ wss.on('connection', (ws) => {
     }
 
     if (data.type === 'score') {
-      // // expect: { by: 'player1'|'player2', points: 1|2|3 }
-      // const by = (data.by === 'player1' || data.by === 'player2') ? data.by : null;
-      // const pts = Number(data.points) || 1;
-      // if (!by) return;
-
-      // room.scores[by] = Math.max(0, room.scores[by] + pts);
-      // broadcastRoom(room, { type: 'score', scores: room.scores });
-
-      // // possession flips after score
-      // room.offenseRole = otherRole(by);
-      // room.defenseRole = by;
-      // room.ballOwnerRole = room.offenseRole;
-      // room.ball.held = true;
-      // stopBallSim(room);
-      // broadcastRoom(room, { type: 'possession', offense: room.offenseRole, defense: room.defenseRole });
-      // broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
-      // sendBall(room);
-
-      // // inside the data.type === 'score' block, where you detect gameOver
-      // if (room.scores[by] >= room.toWin) {
-      //   const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
-
-      //   broadcastRoom(room, {
-      //     type: 'gameOver',
-      //     winner: by,
-      //     final: room.scores,
-      //     totalPayout: payout,
-      //     matchId: room.matchId
-      //   });
-
-      //   setTimeout(() => {
-      //     for (const p of room.players) {
-      //       if (p.ws.readyState === WebSocket.OPEN) {
-      //         p.ws.send(JSON.stringify({ type: 'roomClosed', reason: 'gameOver' }));
-      //       }
-      //     }
-      //     room.players = [];
-      //     rooms.delete(room.id);
-      //     broadcastToLobby();
-      //   }, 250);
-      //   return;
-      // }
       return;
     }
   });
