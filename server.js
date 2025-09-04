@@ -11,6 +11,19 @@ const admin = require('firebase-admin');
 const SERVER_EPOCH = Date.now();
 const getServerTime = () => Date.now() - SERVER_EPOCH;
 
+const HOOP = {
+  x: 0,
+  y: 2.6,    // rim height used by client
+  z: -6.6,   // half-court hoop sits at -Z
+  rimRadiusX: 0.32,  // horizontal tolerance (≈ hoop radius projected on X)
+  yTol: 0.28,        // vertical tolerance around rim plane
+  zTol: 0.45         // depth tolerance around hoop plane
+};
+
+// Score de-bounce: don’t allow another score within this many ms
+const SCORE_COOLDOWN_MS = 1200;
+
+
 function initFirebaseAdmin() {
   // Single base64 env with full JSON
   if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
@@ -165,30 +178,31 @@ function snapshotBall(room) {
   return { x:b.x, y:b.y, z:b.z, vx:b.vx, vy:b.vy, vz:b.vz, held: !!b.held, owner: room.ballOwnerRole };
 }
 
-// Very simple hoop volumes – tweak to your coordinates.
-// Assumes two hoops centered on ±Z with a small radius near rim height.
 function didBallJustScore(room) {
   const b = room.ball;
-  const rimY = 3.05;       // ~10 ft in meters; adjust to your units
-  const tolY = 0.35;       // vertical tolerance around rim plane
-  const rimR = 0.25;       // hoop radius tolerance
 
-  // Example: player1 scores in player2 hoop at +Z; player2 scores in -Z.
-  // Change Z locations/ranges to match your court coordinates.
-  const hoopZ = 12;        // distance to hoop from center (example)
-  const zTol  = 0.60;
+  // Don’t “score” while someone is holding the ball, or while frozen
+  if (room.phase !== PHASE.PLAY) return false;
+  if (b.held) return false;
 
-  // Near either hoop plane?
-  const nearPlusZ  = Math.abs(b.z - (+hoopZ)) < zTol;
-  const nearMinusZ = Math.abs(b.z - (-hoopZ)) < zTol;
-  const nearRimY   = Math.abs(b.y - rimY) < tolY;
+  // Simple cylinder/plane check around the client hoop at (0, 2.6, -6.6)
+  const nearPlaneZ  = Math.abs(b.z - HOOP.z) < HOOP.zTol;
+  const nearRimY    = Math.abs(b.y - HOOP.y) < HOOP.yTol;
+  const inRimHorizX = Math.abs(b.x - HOOP.x) < HOOP.rimRadiusX;
 
-  // Rough "inside ring" proxy: distance to backboard center line in X (no board yet)
-  const inRingX = Math.abs(b.x - 0) < rimR;
+  // Ball should be moving downward through the rim
+  const goingDown = (b.vy < -0.15);
 
-  // Fire only ONCE per crossing; you can refine with a "justCrossed" flag if needed
-  return (nearRimY && inRingX && (nearPlusZ || nearMinusZ));
+  // Cooldown to avoid multiple ticks counting as multiple scores
+  const now = Date.now();
+  if (room._lastScoreAt && (now - room._lastScoreAt) < SCORE_COOLDOWN_MS) return false;
+
+  const scored = nearPlaneZ && nearRimY && inRimHorizX && goingDown;
+  if (scored) room._lastScoreAt = now;
+
+  return scored;
 }
+
 
 function handleServerScore(room) {
   // Decide who gets the points
