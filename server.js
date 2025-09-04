@@ -165,31 +165,30 @@ function snapshotBall(room) {
   return { x:b.x, y:b.y, z:b.z, vx:b.vx, vy:b.vy, vz:b.vz, held: !!b.held, owner: room.ballOwnerRole };
 }
 
+// Very simple hoop volumes – tweak to your coordinates.
+// Assumes two hoops centered on ±Z with a small radius near rim height.
 function didBallJustScore(room) {
   const b = room.ball;
+  const rimY = 3.05;       // ~10 ft in meters; adjust to your units
+  const tolY = 0.35;       // vertical tolerance around rim plane
+  const rimR = 0.25;       // hoop radius tolerance
 
-  // Match client hoop center
-  const HOOP_X = 0.0;
-  const HOOP_Y = 2.6;
-  const HOOP_Z = -6.6;
+  // Example: player1 scores in player2 hoop at +Z; player2 scores in -Z.
+  // Change Z locations/ranges to match your court coordinates.
+  const hoopZ = 12;        // distance to hoop from center (example)
+  const zTol  = 0.60;
 
-  // Tolerances: keep a forgiving window so minor desync still counts
-  const X_TOL = 0.40;  // “ring width” horizontally
-  const Z_TOL = 0.80;  // depth window around hoop plane
-  const Y_TOL = 0.60;  // around rim height (we’ll also require vy < 0)
-  const FLOOR_MIN_Y = 1.5; // ignore stuff bouncing near the floor
+  // Near either hoop plane?
+  const nearPlusZ  = Math.abs(b.z - (+hoopZ)) < zTol;
+  const nearMinusZ = Math.abs(b.z - (-hoopZ)) < zTol;
+  const nearRimY   = Math.abs(b.y - rimY) < tolY;
 
-  const nearX = Math.abs(b.x - HOOP_X) <= X_TOL;
-  const nearZ = Math.abs(b.z - HOOP_Z) <= Z_TOL;
-  const nearY = Math.abs(b.y - HOOP_Y) <= Y_TOL;
+  // Rough "inside ring" proxy: distance to backboard center line in X (no board yet)
+  const inRingX = Math.abs(b.x - 0) < rimR;
 
-  const downward = b.vy < 0;          // crossing down through the rim plane
-  const aboveFloor = b.y > FLOOR_MIN_Y;
-
-  // Ball must be free (not held), within the hoop window, moving downward
-  return !b.held && nearX && nearZ && nearY && downward && aboveFloor;
+  // Fire only ONCE per crossing; you can refine with a "justCrossed" flag if needed
+  return (nearRimY && inRingX && (nearPlusZ || nearMinusZ));
 }
-
 
 function handleServerScore(room) {
   // Decide who gets the points
@@ -679,6 +678,48 @@ wss.on('connection', (ws) => {
     }
 
     if (data.type === 'score') {
+      // // expect: { by: 'player1'|'player2', points: 1|2|3 }
+      // const by = (data.by === 'player1' || data.by === 'player2') ? data.by : null;
+      // const pts = Number(data.points) || 1;
+      // if (!by) return;
+
+      // room.scores[by] = Math.max(0, room.scores[by] + pts);
+      // broadcastRoom(room, { type: 'score', scores: room.scores });
+
+      // // possession flips after score
+      // room.offenseRole = otherRole(by);
+      // room.defenseRole = by;
+      // room.ballOwnerRole = room.offenseRole;
+      // room.ball.held = true;
+      // stopBallSim(room);
+      // broadcastRoom(room, { type: 'possession', offense: room.offenseRole, defense: room.defenseRole });
+      // broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
+      // sendBall(room);
+
+      // // inside the data.type === 'score' block, where you detect gameOver
+      // if (room.scores[by] >= room.toWin) {
+      //   const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
+
+      //   broadcastRoom(room, {
+      //     type: 'gameOver',
+      //     winner: by,
+      //     final: room.scores,
+      //     totalPayout: payout,
+      //     matchId: room.matchId
+      //   });
+
+      //   setTimeout(() => {
+      //     for (const p of room.players) {
+      //       if (p.ws.readyState === WebSocket.OPEN) {
+      //         p.ws.send(JSON.stringify({ type: 'roomClosed', reason: 'gameOver' }));
+      //       }
+      //     }
+      //     room.players = [];
+      //     rooms.delete(room.id);
+      //     broadcastToLobby();
+      //   }, 250);
+      //   return;
+      // }
       return;
     }
   });
