@@ -218,33 +218,10 @@ function handleServerScore(room) {
   // Clear possession immediately; give back on resume or inbound
   room.ballOwnerRole = null;
   room.ball.held = false;
+  stopBallSim(room);
   // Move ball to center (or any neutral inbound spot you prefer)
   room.ball.x = 0; room.ball.y = 1.2; room.ball.z = 0;
   room.ball.vx = room.ball.vy = room.ball.vz = 0;
-
-  setTimeout(() => {
-    // flip to PLAY
-    room.phase = PHASE.PLAY;
-
-    // give ball to the next offense and mark held=true so they can move immediately
-    room.ballOwnerRole = room.offenseRole;   // offenseRole was set to possessionNext below
-    room.ball.held = true;
-
-    // (optional) move ball to the offense player's hand-ish start spot you prefer
-    // keep neutral if you inbound instead
-
-    broadcastRoom(room, {
-      type: 'resume',
-      phase: room.phase,
-      scores: room.scores,
-      ball: snapshotBall(room)
-    });
-
-    // also tell clients who owns the ball now
-    broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
-
-  }, 1800);
-
 
   // Flip possession for next play (winner goes to defense by your old logic)
   const possessionNext = otherRole(scorerRole);
@@ -261,6 +238,29 @@ function handleServerScore(room) {
     freezeMs: 1800,
     ball: snapshotBall(room)
   });
+
+  // Auto-resume after the freeze window, even if the sim is stopped
+  const freezeMs = 1800;
+  setTimeout(() => {
+    if (room.phase === PHASE.SCORE_FREEZE) {
+      // Switch back to PLAY and give offense the ball to start the next possession
+      room.phase = PHASE.PLAY;
+      room.ballOwnerRole = room.offenseRole;
+      room.ball.held = true;
+
+      // (Optional) snap ball again in case anything moved
+      room.ball.vx = room.ball.vy = room.ball.vz = 0;
+
+      broadcastRoom(room, {
+        type: 'resume',
+        phase: room.phase,
+        scores: room.scores,
+        ball: snapshotBall(room)
+      });
+      // You can start the sim again if you want gravity while held to do nothing:
+      // startBallSim(room);
+    }
+  }, freezeMs);
 
   // Game over check using your existing toWin logic:
   if (room.scores[scorerRole] >= room.toWin) {
@@ -717,48 +717,6 @@ wss.on('connection', (ws) => {
     }
 
     if (data.type === 'score') {
-      // // expect: { by: 'player1'|'player2', points: 1|2|3 }
-      // const by = (data.by === 'player1' || data.by === 'player2') ? data.by : null;
-      // const pts = Number(data.points) || 1;
-      // if (!by) return;
-
-      // room.scores[by] = Math.max(0, room.scores[by] + pts);
-      // broadcastRoom(room, { type: 'score', scores: room.scores });
-
-      // // possession flips after score
-      // room.offenseRole = otherRole(by);
-      // room.defenseRole = by;
-      // room.ballOwnerRole = room.offenseRole;
-      // room.ball.held = true;
-      // stopBallSim(room);
-      // broadcastRoom(room, { type: 'possession', offense: room.offenseRole, defense: room.defenseRole });
-      // broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
-      // sendBall(room);
-
-      // // inside the data.type === 'score' block, where you detect gameOver
-      // if (room.scores[by] >= room.toWin) {
-      //   const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
-
-      //   broadcastRoom(room, {
-      //     type: 'gameOver',
-      //     winner: by,
-      //     final: room.scores,
-      //     totalPayout: payout,
-      //     matchId: room.matchId
-      //   });
-
-      //   setTimeout(() => {
-      //     for (const p of room.players) {
-      //       if (p.ws.readyState === WebSocket.OPEN) {
-      //         p.ws.send(JSON.stringify({ type: 'roomClosed', reason: 'gameOver' }));
-      //       }
-      //     }
-      //     room.players = [];
-      //     rooms.delete(room.id);
-      //     broadcastToLobby();
-      //   }, 250);
-      //   return;
-      // }
       return;
     }
   });
