@@ -218,7 +218,6 @@ function handleServerScore(room) {
   // Clear possession immediately; give back on resume or inbound
   room.ballOwnerRole = null;
   room.ball.held = false;
-  stopBallSim(room);
   // Move ball to center (or any neutral inbound spot you prefer)
   room.ball.x = 0; room.ball.y = 1.2; room.ball.z = 0;
   room.ball.vx = room.ball.vy = room.ball.vz = 0;
@@ -754,3 +753,4 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`WS server listening on :${PORT}`);
 });
+
