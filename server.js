@@ -262,15 +262,18 @@ function handleServerScore(room) {
     }
   }, freezeMs);
 
-  // Game over check using your existing toWin logic:
   if (room.scores[scorerRole] >= room.toWin) {
+    room.phase = 'GAME_OVER'; // prevent any resume
     const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
+
     broadcastRoom(room, {
       type: 'gameOver',
       winner: scorerRole,
-      final: room.scores,
-      totalPayout: payout,
-      matchId: room.matchId
+      scores: room.scores,            // <-- was `final`
+      toWin: room.toWin,              // client shows "to X"
+      mode: room.mode,                // for coin settlement
+      roomId: room.id,                // for escrow key
+      wager: room.wager || 0,         // for escrow amount
     });
 
     setTimeout(() => {
@@ -283,7 +286,10 @@ function handleServerScore(room) {
       rooms.delete(room.id);
       broadcastToLobby();
     }, 250);
+
+    return;
   }
+
 }
 
 
