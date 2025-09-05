@@ -140,7 +140,7 @@ function makeRoom(id, name, mode = 'casual') {
 
 function summarizeRooms() {
   return [...rooms.values()]
-    .filter(r => r.players.length < r.maxPlayers)
+    .filter(r => r.players.length > 0 && r.players.length < r.maxPlayers) // <-- require > 0
     .map(r => ({
       id: r.id,
       name: r.name,
@@ -152,6 +152,7 @@ function summarizeRooms() {
       wager: r.wager || 0
     }));
 }
+
 
 function broadcastToLobby() {
   for (const client of wss.clients) {
@@ -470,7 +471,6 @@ function leaveCurrentRoom(ws) {
   const room = rooms.get(roomId);
   if (!room) { ws._roomId = null; ws._role = null; return; }
 
-  // remove me
   const me = room.players.find(p => p.ws === ws) || null;
   room.players = room.players.filter(p => p.ws !== ws);
 
@@ -484,9 +484,12 @@ function leaveCurrentRoom(ws) {
     return;
   }
 
-  // No one left: just delete room
+  // No one left: stop timers AND delete room, then refresh lobby
   if (room.players.length === 0) {
-    stopBallSim(room);
+    try { if (room.sim?.timer) clearInterval(room.sim.timer); } catch {}
+    try { if (room.coin?.timer) clearTimeout(room.coin.timer); } catch {}
+    rooms.delete(room.id);              // <-- add this
+    broadcastToLobby();                 // <-- and this
     return;
   }
 
