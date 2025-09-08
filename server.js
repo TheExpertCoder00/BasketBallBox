@@ -77,15 +77,6 @@ function initFirebaseAdmin() {
 
 initFirebaseAdmin();
 const rtdb = admin.database();
-async function ensureStarterCoins(uid) {
-  const ref = rtdb.ref(`users/${uid}/coins`);
-  const snap = await ref.get();
-  if (!snap.exists()) {
-    await ref.set(1000);  // give starter balance
-    console.log(`[coins] Starter coins set for ${uid}`);
-  }
-}
-
 
 const PHASE = { PLAY: 'PLAY', SCORE_FREEZE: 'SCORE_FREEZE' };
 
@@ -529,9 +520,6 @@ wss.on('connection', (ws) => {
           email: decoded.email || null,
           name: decoded.name || null
         };
-
-        // 🔥 Give starter coins if this is their first login
-        await ensureStarterCoins(ws._user.uid);
 
         // 🔥 Store login in Firestore
         await db.collection('logins').doc(decoded.uid).set({
