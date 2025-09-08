@@ -77,6 +77,15 @@ function initFirebaseAdmin() {
 
 initFirebaseAdmin();
 const rtdb = admin.database();
+async function ensureStarterCoins(uid) {
+  const ref = rtdb.ref(`users/${uid}/coins`);
+  const snap = await ref.get();
+  if (!snap.exists()) {
+    await ref.set(1000);  // give starter balance
+    console.log(`[coins] Starter coins set for ${uid}`);
+  }
+}
+
 
 const PHASE = { PLAY: 'PLAY', SCORE_FREEZE: 'SCORE_FREEZE' };
 
@@ -140,7 +149,7 @@ function makeRoom(id, name, mode = 'casual') {
 
 function summarizeRooms() {
   return [...rooms.values()]
-    .filter(r => r.players.length > 0 && r.players.length < r.maxPlayers) // <-- require > 0
+    .filter(r => r.players.length < r.maxPlayers)
     .map(r => ({
       id: r.id,
       name: r.name,
@@ -152,7 +161,6 @@ function summarizeRooms() {
       wager: r.wager || 0
     }));
 }
-
 
 function broadcastToLobby() {
   for (const client of wss.clients) {
@@ -240,41 +248,15 @@ function handleServerScore(room) {
     ball: snapshotBall(room)
   });
 
-  // Auto-resume after the freeze window, even if the sim is stopped
-  const freezeMs = 1800;
-  setTimeout(() => {
-    if (room.phase === PHASE.SCORE_FREEZE) {
-      // Switch back to PLAY and give offense the ball to start the next possession
-      room.phase = PHASE.PLAY;
-      room.ballOwnerRole = room.offenseRole;
-      room.ball.held = true;
-
-      // (Optional) snap ball again in case anything moved
-      room.ball.vx = room.ball.vy = room.ball.vz = 0;
-
-      broadcastRoom(room, {
-        type: 'resume',
-        phase: room.phase,
-        scores: room.scores,
-        ball: snapshotBall(room)
-      });
-      // You can start the sim again if you want gravity while held to do nothing:
-      // startBallSim(room);
-    }
-  }, freezeMs);
-
+  // Game over check using your existing toWin logic:
   if (room.scores[scorerRole] >= room.toWin) {
-    room.phase = 'GAME_OVER'; // prevent any resume
     const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
-
     broadcastRoom(room, {
       type: 'gameOver',
       winner: scorerRole,
-      scores: room.scores,            // <-- was `final`
-      toWin: room.toWin,              // client shows "to X"
-      mode: room.mode,                // for coin settlement
-      roomId: room.id,                // for escrow key
-      wager: room.wager || 0,         // for escrow amount
+      final: room.scores,
+      totalPayout: payout,
+      matchId: room.matchId
     });
 
     setTimeout(() => {
@@ -287,10 +269,7 @@ function handleServerScore(room) {
       rooms.delete(room.id);
       broadcastToLobby();
     }, 250);
-
-    return;
   }
-
 }
 
 
@@ -471,6 +450,7 @@ function leaveCurrentRoom(ws) {
   const room = rooms.get(roomId);
   if (!room) { ws._roomId = null; ws._role = null; return; }
 
+  // remove me
   const me = room.players.find(p => p.ws === ws) || null;
   room.players = room.players.filter(p => p.ws !== ws);
 
@@ -484,12 +464,9 @@ function leaveCurrentRoom(ws) {
     return;
   }
 
-  // No one left: stop timers AND delete room, then refresh lobby
+  // No one left: just delete room
   if (room.players.length === 0) {
-    try { if (room.sim?.timer) clearInterval(room.sim.timer); } catch {}
-    try { if (room.coin?.timer) clearTimeout(room.coin.timer); } catch {}
-    rooms.delete(room.id);              // <-- add this
-    broadcastToLobby();                 // <-- and this
+    stopBallSim(room);
     return;
   }
 
@@ -552,6 +529,9 @@ wss.on('connection', (ws) => {
           email: decoded.email || null,
           name: decoded.name || null
         };
+
+        // 🔥 Give starter coins if this is their first login
+        await ensureStarterCoins(ws._user.uid);
 
         // 🔥 Store login in Firestore
         await db.collection('logins').doc(decoded.uid).set({
