@@ -207,41 +207,63 @@ function didBallJustScore(room) {
 
 
 function handleServerScore(room) {
-  // Decide who gets the points
+  // 1) Award point to the scorer
   const scorerRole = room.lastShooterRole || room.ballOwnerRole || room.offenseRole || 'player1';
   room.scores[scorerRole] = Math.max(0, (room.scores[scorerRole] || 0) + 1);
 
-  // Freeze world & neutralize ball
+  // 2) Enter freeze phase and neutralize ball
+  const freezeMs = 1800;
   room.phase = PHASE.SCORE_FREEZE;
-  room.freezeUntil = Date.now() + 1800;
+  room.freezeUntil = Date.now() + freezeMs;
 
-  // Clear possession immediately; give back on resume or inbound
   room.ballOwnerRole = null;
   room.ball.held = false;
-  stopBallSim(room);
-  // Move ball to center (or any neutral inbound spot you prefer)
-  room.ball.x = 0; room.ball.y = 1.2; room.ball.z = 0;
-  room.ball.vx = room.ball.vy = room.ball.vz = 0;
 
-  // Flip possession for next play (winner goes to defense by your old logic)
+  stopBallSim(room); // stop physics during freeze
+
+  // Neutral ball at center
+  room.ball.x = 0; room.ball.y = 1.2; room.ball.z = 0;
+  room.ball.vx = 0; room.ball.vy = 0; room.ball.vz = 0;
+
+  // Possession flips next play
   const possessionNext = otherRole(scorerRole);
   room.offenseRole = possessionNext;
   room.defenseRole = scorerRole;
 
-  // Tell both clients exactly what happened
+  // Inform clients of score + freeze
   broadcastRoom(room, {
     type: 'score',
     phase: room.phase,
     scorer: scorerRole,
     scores: room.scores,
     possessionNext,
-    freezeMs: 1800,
+    freezeMs,
     ball: snapshotBall(room)
   });
 
-  // Game over check using your existing toWin logic:
+  // 3) Schedule resume after freeze (independent of physics loop)
+  const resumeTimer = setTimeout(() => {
+    if (room.phase !== PHASE.SCORE_FREEZE) return; // already resumed/ended
+    room.phase = PHASE.PLAY;
+
+    // restart physics before notifying clients
+    startBallSim(room);
+
+    broadcastRoom(room, {
+      type: 'resume',
+      phase: room.phase,
+      scores: room.scores,
+      ball: snapshotBall(room)
+    });
+  }, freezeMs);
+
+  // 4) Game over check
   if (room.scores[scorerRole] >= room.toWin) {
+    // prevent stray resume after game ends
+    clearTimeout(resumeTimer);
+
     const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
+
     broadcastRoom(room, {
       type: 'gameOver',
       winner: scorerRole,
@@ -261,7 +283,11 @@ function handleServerScore(room) {
       broadcastToLobby();
     }, 250);
   }
+
+  // Optional cleanup
+  room.lastShooterRole = null;
 }
+
 
 
 // ----------------- Ball Sim -----------------
