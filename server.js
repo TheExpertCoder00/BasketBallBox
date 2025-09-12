@@ -206,12 +206,13 @@ function didBallJustScore(room) {
 }
 
 
+// server.js
 function handleServerScore(room) {
-  // 1) Award point to the scorer
+  // 1) Award point
   const scorerRole = room.lastShooterRole || room.ballOwnerRole || room.offenseRole || 'player1';
   room.scores[scorerRole] = Math.max(0, (room.scores[scorerRole] || 0) + 1);
 
-  // 2) Enter freeze phase and neutralize ball
+  // 2) Freeze and neutralize ball
   const freezeMs = 1800;
   room.phase = PHASE.SCORE_FREEZE;
   room.freezeUntil = Date.now() + freezeMs;
@@ -219,18 +220,17 @@ function handleServerScore(room) {
   room.ballOwnerRole = null;
   room.ball.held = false;
 
-  stopBallSim(room); // stop physics during freeze
+  stopBallSim(room);
 
-  // Neutral ball at center
   room.ball.x = 0; room.ball.y = 1.2; room.ball.z = 0;
   room.ball.vx = 0; room.ball.vy = 0; room.ball.vz = 0;
 
-  // Possession flips next play
+  // 3) Flip possession for next play
   const possessionNext = otherRole(scorerRole);
   room.offenseRole = possessionNext;
   room.defenseRole = scorerRole;
 
-  // Inform clients of score + freeze
+  // 4) Notify score + freeze
   broadcastRoom(room, {
     type: 'score',
     phase: room.phase,
@@ -241,14 +241,19 @@ function handleServerScore(room) {
     ball: snapshotBall(room)
   });
 
-  // 3) Schedule resume after freeze (independent of physics loop)
+  // 5) Schedule authoritative resume (server grants ball to offense; no physics yet)
   const resumeTimer = setTimeout(() => {
-    if (room.phase !== PHASE.SCORE_FREEZE) return; // already resumed/ended
+    if (room.phase !== PHASE.SCORE_FREEZE) return;
     room.phase = PHASE.PLAY;
 
-    // restart physics before notifying clients
-    startBallSim(room);
+    // hand ball to offense and mark held (physics remains stopped until release)
+    room.ballOwnerRole = room.offenseRole;
+    room.ball.held = true;
 
+    // first tell clients who owns the ball
+    broadcastRoom(room, { type: 'ballOwner', role: room.ballOwnerRole, held: true });
+
+    // then announce resume with a fresh snapshot
     broadcastRoom(room, {
       type: 'resume',
       phase: room.phase,
@@ -257,13 +262,11 @@ function handleServerScore(room) {
     });
   }, freezeMs);
 
-  // 4) Game over check
+  // 6) Game over guard
   if (room.scores[scorerRole] >= room.toWin) {
-    // prevent stray resume after game ends
     clearTimeout(resumeTimer);
 
     const payout = room.mode === 'competitive' ? (room.wager || 0) * 2 : 0;
-
     broadcastRoom(room, {
       type: 'gameOver',
       winner: scorerRole,
@@ -284,7 +287,6 @@ function handleServerScore(room) {
     }, 250);
   }
 
-  // Optional cleanup
   room.lastShooterRole = null;
 }
 
