@@ -2,39 +2,31 @@ import * as THREE from '../build/three.module.js';
 import { GLTFLoader } from './GLTFLoader.js';
 
 let ws;
-let myId = null;
-let opponentId = null;
 
 (function initWS() {
-  // 1) Prefer explicit Render URL
-  const EXPLICIT_WS_URL = "wss://basketballbox.onrender.com/ws"; // or just "/" if your server listens at root
-
-  // 2) Fallback to same-origin for local dev if you want
-  const SAME_ORIGIN_WS = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
-
-  // 3) Choose URL (use explicit unless you really need same-origin)
-  const url = EXPLICIT_WS_URL;
+  const url =
+    (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+    location.host + '/ws';
 
   function connect() {
-    console.log("[bbxWS] connecting to", url);
-    console.log("12345.");
-    const ws = new WebSocket(url);
-    window.bbxWS = ws;
+    window.bbxWS = new WebSocket(url);
+    const ws = window.bbxWS;
 
     ws.onopen = () => {
-      console.log("[bbxWS] connected");
-      // sendAuthWith(ws); // your existing auth handoff
+      console.log('[bbxWS] connected');
+      sendAuthWith(ws);   // uses the exact socket that just opened
     };
 
-    ws.onmessage = (ev) => {
-      let data; try { data = JSON.parse(ev.data); } catch { return; }
+    ws.onclose = () => {
+      console.warn('[bbxWS] closed; retrying in 1.5s');
+      setTimeout(connect, 1500);
     };
 
     ws.onerror = (e) => console.error('[bbxWS] error', e);
 
-    ws.onclose = () => {
-      console.warn("[bbxWS] closed; retrying in 1.5s");
-      setTimeout(connect, 1500);
+    ws.onmessage = (ev) => {
+      let data; try { data = JSON.parse(ev.data); } catch { return; }
+      console.log('[bbxWS msg]', data);
     };
   }
 
@@ -87,19 +79,6 @@ const animationNames = [];
 let currentAnimIndex = 0;
 let localAvatar, remoteAvatar, localMixer, remoteMixer;
 
-const ANIM_IDX = {
-  idle: 0,
-  idle_def: 18,
-  dribble: 16,
-  run: 16, // Jog RH Loop
-  dunk: 13,
-  shoot: 6,
-  crossover: 10,
-  block: 20,
-  defense: 22
-};
-let lastPlayedAnimIdx = null;
-
 // --- Court anchors (unchanged) ---
 const HOOP_POS    = new THREE.Vector3(0, 2.6, -6.6);
 const BACKBOARD_Z = HOOP_POS.z - 0.4;
@@ -147,8 +126,9 @@ function isSignedIn() {
   try { return !!firebase.auth().currentUser; } catch { return false; }
 }
 
-function applySpawnForRoles(offenseRole, opts = {}) {
-  const noPickup = !!opts.noPickup;
+
+function applySpawnForRoles(offenseRole) {
+  // ALWAYS: hoop (x≈0)  —  defender (x≈+2.8)  —  offense+ball (x≈+5.8)
 
   const iAmOffense = (myRole === offenseRole);
   const mySpawn  = iAmOffense ? OFFENSE_SPAWN : DEFENDER_SPAWN;
@@ -166,27 +146,19 @@ function applySpawnForRoles(offenseRole, opts = {}) {
   cameraHolder.rotation.y = yaw;
   localPlayer.rotation.y = yaw + Math.PI;
 
-  // Remote pawn to its spawn
+  // Put the remote pawn at its spawn immediately (their client will also snap)
   remotePlayer.position.copy(oppSpawn);
 
-  // Ball defaults
-  holdingBall = false;
+  // Ball: offense holds it; defense does not
+  holdingBall = iAmOffense;
   ballVelocity.set(0, 0, 0);
 
   if (iAmOffense) {
-    if (noPickup) {
-      // wait for server 'ballOwner'
-      ball.position.set(OFFENSE_SPAWN.x, 0.25, OFFENSE_SPAWN.z);
-    } else {
-      // client-initiated pickup (used outside resume flow)
-      const holdOffset = new THREE.Vector3(0, -0.3, -0.8);
-      ball.position.copy(ballHolder.localToWorld(holdOffset));
-      if (window.bbxWS && window.bbxWS.readyState === WebSocket.OPEN) {
-        window.bbxWS.send(JSON.stringify({ type: 'pickup', role: myRole }));
-      }
-      holdingBall = true;
-    }
+    // put the ball in my hand right away (server also sets me owner/held)
+    const holdOffset = new THREE.Vector3(0, -0.3, -0.8);
+    ball.position.copy(ballHolder.localToWorld(holdOffset));
   } else {
+    // show ball near the offense spawn until server’s owner/held arrives
     ball.position.set(OFFENSE_SPAWN.x, 0.25, OFFENSE_SPAWN.z);
   }
 }
@@ -220,7 +192,7 @@ let lastBallSeq = -1;          // drop stale ball packets
 
 let intermission = false;      // true during the “Point!” pause
 let intermissionTimer = null;
-let INTERMISSION_MS = 1800;
+const INTERMISSION_MS = 1800;
 let lastRoles = { offense:null, defense:null }; // remember who’s offense after server announces
 
 
@@ -426,9 +398,25 @@ function showIntermission() {
   document.getElementById('oppScore').textContent = String(theirScore);
   updateIntermissionWho();
   document.getElementById('intermission').style.display = 'flex';
+
+  intermissionTimer = setTimeout(() => {
+    intermission = false;
+    document.getElementById('intermission').style.display = 'none';
+    if (lastRoles.offense) applySpawnForRoles(lastRoles.offense);
+  }, INTERMISSION_MS);
+
 }
 
-const socket = window.bbxWS;
+function lerpAngle(a, b, t) {
+  // shortest-path interpolation in [-pi, pi]
+  const TWO_PI = Math.PI * 2;
+  let diff = (b - a) % TWO_PI;
+  if (diff > Math.PI) diff -= TWO_PI;
+  if (diff < -Math.PI) diff += TWO_PI;
+  return a + diff * t;
+}
+
+const socket = new WebSocket("wss://basketballbox.onrender.com");
 
 
 let myScore = 0;
@@ -608,24 +596,6 @@ async function updateJoinButtonsForCoins(container) {
   });
 }
 
-function sendPos() {
-  const ws = window.bbxWS;
-  if (!ws || ws.readyState !== 1) return;
-
-  // your local player object
-  const p = localPlayer; 
-  ws.send(JSON.stringify({
-    type: 'pos',
-    x: p.position.x,
-    y: p.position.y,
-    z: p.position.z,
-    rotY: p.rotation.y
-  }));
-}
-
-// 20 updates per second is fine
-setInterval(sendPos, 50);
-
 function renderRoomRow(room) {
   // room = { id, name, mode, wager, toWin, ... }
   const row = document.createElement('div');
@@ -743,9 +713,10 @@ createRoomBtn.onclick = async () => {
 // Ask for room list on connect
 socket.addEventListener('open', () => {
   socket.send(JSON.stringify({ type:'listRooms' }));
-  // Safely announce auth state (handles logged-in and guests)
-  sendWSAuthState(socket);
-});
+  firebase.auth().currentUser.getIdToken(true).then(token => {
+    ws.send(JSON.stringify({ type: 'auth', token }));
+  });
+}); 
 
 let currentBallOwner = null;
 
@@ -789,6 +760,32 @@ socket.addEventListener('message', (e) => {
         (async () => {
           try { await BBXCoins.escrowRefund(user.uid, data.roomId, data.wager); }
           catch (e) { console.warn('Refund escrow error:', e); }
+        })();
+      }
+      break;
+    }
+
+    case 'matchOver': {
+      // Pay the winner 2*wager
+      if (data.mode === 'competitive') {
+        const user = firebase.auth().currentUser;
+        if (!user) break;
+        const iAmWinner =
+          (data.winnerUid && data.winnerUid === user.uid) ||
+          (data.winnerRole && data.winnerRole === (window.myRole || ''));
+        (async () => {
+          try {
+            if (iAmWinner) {
+              await BBXCoins.escrowFinishWin(user.uid, data.roomId, data.wager);
+            } else {
+              // loser: clear any escrow note (already paid on start)
+              await firebase.database()
+                .ref(`users/${user.uid}/escrows/${data.roomId}`).remove()
+                .catch(() => {});
+            }
+          } catch (e) {
+            console.warn('Settlement error:', e);
+          }
         })();
       }
       break;
@@ -865,7 +862,6 @@ socket.addEventListener('message', (e) => {
 
 
     case 'ballOwner': {
-      if (intermission) break;
       // Server tells who has the ball and whether it's in-hand
       possessionRole = data.held ? data.role : null;
       holdingBall = data.held && (data.role === myRole);
@@ -885,140 +881,26 @@ socket.addEventListener('message', (e) => {
       }
       break;
 
-    case 'roster':
-      // First time we see a roster, find myId by elimination:
-      if (!myId) {
-        // If server sent your id somewhere else, set myId there.
-        // If not, assume first time movement comes we’ll learn opponent; otherwise keep this simple:
-        // Option A: server can also send {type:'hello', id:'...'} on connect so we set myId immediately.
-      }
-      // When two players, derive opponent id
-      if (data.players && data.players.length === 2) {
-        const ids = data.players.map(p => p.id);
-        if (myId && ids.includes(myId)) {
-          opponentId = ids.find(id => id !== myId) || opponentId;
-        }
+    case 'position':
+      remotePlayer.position.lerp(new THREE.Vector3(data.x, data.y - 0.9, data.z), 0.5);
+      if (typeof data.ry === 'number') {
+        remotePlayer.rotation.y = lerpAngle(remotePlayer.rotation.y, data.ry + Math.PI, 0.3);
       }
       break;
 
-    case 'hello':
-      // Optional: if server sends your id once on connect
-      myId = data.id;
+    // Opponent updates their score number → show intermission
+    case 'score':
+      theirScore = data.score;
+      document.getElementById('theirScore').textContent = theirScore;
+      showIntermission(); // pause on the defender’s side too
       break;
-
-    case 'pos':
-      // If we don’t have myId yet, do a best-effort: first 'pos' we receive is opponent
-      if (!myId && opponentId == null) {
-        opponentId = data.from;
-      }
-      if (data.from === opponentId) {
-        // apply to the remote player object
-        remotePlayer.position.set(data.x, data.y, data.z);
-        remotePlayer.rotation.y = data.rotY;
-      }
-      break;
-
-    // PATCH: server-authoritative scoring
-    case 'score': {
-      // trust the server's scoreboard
-      const s = data.scores || {};
-      if (typeof s.player1 === 'number' && typeof s.player2 === 'number') {
-        if (myRole === 'player1') {
-          myScore    = s.player1;
-          theirScore = s.player2;
-        } else {
-          myScore    = s.player2;
-          theirScore = s.player1;
-        }
-        document.getElementById('myScore').textContent    = String(myScore);
-        document.getElementById('theirScore').textContent = String(theirScore);
-      } else if (typeof data.score === 'number') {
-        // backward-compat, if server ever sent a single number
-        theirScore = data.score;
-        document.getElementById('theirScore').textContent = String(theirScore);
-      }
-
-      // hard reset local ball beliefs (prevents “I still have ball” bug)
-      holdingBall = false;
-      possessionRole = null;
-
-      // snap ball to the server state (neutral/inbound spot)
-      if (data.ball) {
-        ball.position.set(data.ball.x, data.ball.y, data.ball.z);
-        ballVelocity.set(data.ball.vx, data.ball.vy, data.ball.vz);
-      }
-
-      intermission = true;
-      if (typeof data.freezeMs === 'number') {
-        INTERMISSION_MS = data.freezeMs;
-      }
-
-      lastRoles.offense = data.possessionNext;
-      lastRoles.defense = (data.possessionNext === 'player1' ? 'player2' : 'player1');
-
-      myScore    = (myRole === 'player1') ? (data.scores.player1 ?? 0) : (data.scores.player2 ?? 0);
-      theirScore = (myRole === 'player1') ? (data.scores.player2 ?? 0) : (data.scores.player1 ?? 0);
-
-      document.getElementById('myScore').textContent    = String(myScore);
-      document.getElementById('theirScore').textContent = String(theirScore);
-
-      updateIntermissionWho();
-      window.serverPhase = 'SCORE_FREEZE';
-      showIntermission();
-      break;
-    }
-
-    case 'resume': {
-      window.serverPhase = (data.phase || 'PLAY');
-
-      intermission = false;
-      const interEl = document.getElementById('intermission');
-      if (interEl) interEl.style.display = 'none';
-
-      try {
-        preparingShot = false;
-        preparingDunk = false;
-        dribbling = false;
-        blockJumpStart = null;
-        serverSimActive = false;
-        window.canMove = true;
-        window.controlsLocked = false;
-        shiftHeld = qPressed = fPressed = false;
-      } catch {}
-
-      if (data.scores) {
-        const mine  = myRole;
-        const other = (myRole === 'player1') ? 'player2' : 'player1';
-        myScore    = data.scores[mine]  || 0;
-        theirScore = data.scores[other] || 0;
-        const myEl = document.getElementById('myScore');
-        const thEl = document.getElementById('theirScore');
-        if (myEl) myEl.textContent = String(myScore);
-        if (thEl) thEl.textContent = String(theirScore);
-      }
-
-      if (data.ball) {
-        ball.position.set(data.ball.x, data.ball.y, data.ball.z);
-        ballVelocity.set(data.ball.vx, data.ball.vy, data.ball.vz);
-      }
-
-      // Do not self-pickup on resume. Wait for server 'ballOwner'.
-      if (lastRoles.offense) applySpawnForRoles(lastRoles.offense, { noPickup: true });
-
-      break;
-    }
-
-
-
+    
     case 'gameOver': {
       const won = (data.winner === myRole);
-
-      // ---- UI handling ----
       const me = parseInt(document.getElementById('myScore').textContent, 10) || 0;
       const them = parseInt(document.getElementById('theirScore').textContent, 10) || 0;
-      const scores = data.scores || data.final || { player1: 0, player2: 0 };
-      const finalMe   = myRole === 'player1' ? (scores.player1 ?? 0) : (scores.player2 ?? 0);
-      const finalThem = myRole === 'player1' ? (scores.player2 ?? 0) : (scores.player1 ?? 0);
+      const finalMe = data.scores ? (myRole === 'player1' ? data.scores.player1 : data.scores.player2) : me;
+      const finalThem = data.scores ? (myRole === 'player1' ? data.scores.player2 : data.scores.player1) : them;
 
       const m = document.getElementById('gameOverModal');
       const t = document.getElementById('gameOverTitle');
@@ -1028,38 +910,16 @@ socket.addEventListener('message', (e) => {
         s.textContent = `Final score ${finalMe}–${finalThem} (to ${data.toWin || 11})`;
         m.style.display = 'flex';
       }
+
+      // Stop any “between points” overlay and input lock, if you have one
       if (typeof hideIntermission === 'function') hideIntermission?.();
 
-      // ---- Competitive coin payout ----
-      if (data.mode === 'competitive') {
-        const user = firebase.auth().currentUser;
-        if (user) {
-          const iAmWinner =
-            (data.winnerUid && data.winnerUid === user.uid) ||
-            (data.winner && data.winner === myRole);
-          (async () => {
-            try {
-              if (iAmWinner) {
-                await BBXCoins.escrowFinishWin(user.uid, data.roomId, data.wager);
-              } else {
-                await firebase.database()
-                  .ref(`users/${user.uid}/escrows/${data.roomId}`).remove()
-                  .catch(() => {});
-              }
-            } catch (e) {
-              console.warn('Settlement error:', e);
-            }
-          })();
-        }
-      }
       break;
     }
 
-
     case 'animation':
-      console.log("REMOTE: Playing animation index", data.animation, animationNames[data.animation]);
-      if (remoteActionList[data.animation]) {
-        playAnimation(remoteActionList, data.animation, data.lock || false);
+      if (remoteActions[data.animation]) {
+        playAnimation(remoteActions, data.animation, data.lock || false);
       }
       break;
   }
@@ -1160,89 +1020,96 @@ let animationLocked = false;
 // Who currently owns the ball, per server ("player1" | "player2" | null)
 let possessionRole = null;
 
-function playAnimation(actionList, idx, lock = false) {
-  const action = actionList[idx];
-  if (!action) {
-    console.warn(`⚠️ Animation not found at index: ${idx}`);
+function playAnimation(actions, name, lock = false) {
+  if (!actions[name]) {
+    console.warn(`⚠️ [${myRole}] Animation not found: ${name}`);
     return;
   }
 
-  // Stop all actions
-  actionList.forEach(a => a && a.stop());
+  const currentAction = actions === localActions ? localCurrentAction : remoteCurrentAction;
 
-  action.reset();
-  action.setEffectiveWeight(1);
-  action.fadeIn(0.2).play();
+  if (currentAction === actions[name]) return;
 
-  if (actionList === localActionList) {
-    localCurrentAction = action;
-    lastPlayedAnimIdx = idx;
+  // console.log(`▶️ [${myRole}] Switching to animation: ${name} (${actions === localActions ? 'local' : 'remote'})`);
+
+  if (currentAction) currentAction.stop();
+
+  const newAction = actions[name];
+  newAction.reset().fadeIn(0.2).play();
+
+  if (actions === localActions) {
+    localCurrentAction = newAction;
     if (socket.readyState === WebSocket.OPEN) {
+      // console.log(`📤 [${myRole}] Sending animation: ${name}, lock: ${lock}`);
       socket.send(JSON.stringify({
         type: "animation",
-        animation: idx,
+        animation: name,
         lock: lock
       }));
     }
-    if (lock) {
-      animationLocked = true;
-      const duration = action.getClip().duration * 0.5 * 1000;
-      setTimeout(() => {
-        animationLocked = false;
-        lastPlayedAnimIdx = null;
-      }, duration);
-    }
   } else {
-    remoteCurrentAction = action;
+    remoteCurrentAction = newAction;
+  }
+
+  if (lock && actions === localActions) {
+    // console.log(`🔒 [${myRole}] Animations locked`);
+    animationLocked = true;
+
+    // Wait for animation to finish, then unlock
+    const duration = newAction.getClip().duration * 0.5 * 1000;
+    // console.log(`🔒 [${myRole}] Animation locked for ${duration.toFixed(0)}ms`);
+
+    setTimeout(() => {
+      animationLocked = false;
+      // console.log(`🔓 [${myRole}] Animation unlocked`);
+    }, duration);
   }
 }
-const localActionList = [];
-const remoteActionList = [];
 
-loader.load("animations.glb", (gltf) => {
+// Load local player avatar
+loader.load("Animated.glb", (gltf) => {
   localAvatar = gltf.scene;
   localAvatar.scale.set(1, 1, 1);
   localAvatar.position.set(0, -0.73, 0);
+  localAvatar.visible = false; // Make local player invisible for first-person view
   localPlayer.add(localAvatar);
 
-  let skinnedMesh = null;
-  localAvatar.traverse((obj) => {
-    if (obj.isSkinnedMesh) skinnedMesh = obj;
-  });
+  localMixer = new THREE.AnimationMixer(localAvatar);
 
-  localMixer = new THREE.AnimationMixer(skinnedMesh || localAvatar);
-
-  gltf.animations.forEach((clip, i) => {
-    localActionList[i] = localMixer.clipAction(clip);
-    localActions[clip.name] = localActionList[i];
-    if (!animationNames.includes(clip.name)) {
-      animationNames.push(clip.name);
+  // Store animations by index: 0 = Dunk, 1 = Idle, etc.
+  gltf.animations.forEach((clip, index) => {
+    const key = index.toString();
+    localActions[key] = localMixer.clipAction(clip);
+    if (!animationNames.includes(key)) {
+      animationNames.push(key);
+    }
+    if (index === 1) { // Index 1 is Idle
+      localActions[key].play();
+      localCurrentAction = localActions[key];
     }
   });
-
-  localAvatar.visible = false; // <-- Make local player invisible
-  console.log("Animation order:", animationNames);
+  // console.log(`✅ [${myRole}] Local avatar loaded with animations:`, Object.keys(localActions));
 });
 
-loader.load("animations.glb", (gltf) => {
+// Load remote player avatar
+loader.load("Animated.glb", (gltf) => {
   remoteAvatar = gltf.scene;
   remoteAvatar.scale.set(1, 1, 1);
   remoteAvatar.position.set(0, -0.73, 0);
   remotePlayer.add(remoteAvatar);
 
-  // Find the skinned mesh (usually the first child with a skeleton)
-  let skinnedMesh = null;
-  remoteAvatar.traverse((obj) => {
-    if (obj.isSkinnedMesh) skinnedMesh = obj;
-  });
+  remoteMixer = new THREE.AnimationMixer(remoteAvatar);
 
-  // Use skinnedMesh or remoteAvatar as mixer root
-  remoteMixer = new THREE.AnimationMixer(skinnedMesh || remoteAvatar);
-
-  gltf.animations.forEach((clip, i) => {
-    remoteActionList[i] = remoteMixer.clipAction(clip);
-    remoteActions[clip.name] = remoteActionList[i];
+  // Store animations for remote player
+  gltf.animations.forEach((clip, index) => {
+    const key = index.toString();
+    remoteActions[key] = remoteMixer.clipAction(clip);
+    if (index === 1) { // Start remote player with Idle animation
+      remoteActions[key].play();
+      remoteCurrentAction = remoteActions[key];
+    }
   });
+  // console.log(`✅ [${myRole}] Remote avatar loaded with animations:`, Object.keys(remoteActions));
 });
 
 const localNameTag = makeNameTag("You");
@@ -1398,15 +1265,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-document.addEventListener("keydown", (e) => {
-  if (e.code === "KeyZ") {
-    let idx = (lastPlayedAnimIdx === null ? 0 : lastPlayedAnimIdx + 1) % localActionList.length;
-    playAnimation(localActionList, idx);
-    console.log("DEBUG: Forced animation index", idx, animationNames[idx]);
-  }
-});
-
-
 document.addEventListener('mousemove', (e) => {
   if (document.pointerLockElement === canvas) {
     yaw -= e.movementX * 0.001;
@@ -1432,22 +1290,25 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('mousedown', (e) => {
   if (!holdingBall || e.button !== 0) return;
 
-  const hoopPos = HOOP_POS;
+  const hoopPos = HOOP_POS; // single hoop
   const distToHoop = cameraHolder.position.distanceTo(hoopPos);
   const dir = hoopPos.clone().sub(cameraHolder.position).normalize();
   const arcBoost = new THREE.Vector3(0, 1.2, 0);
   dir.add(arcBoost).normalize();
   const power = Math.min(0.18 + distToHoop * 0.01, 0.25);
 
+  // IMPORTANT: do NOT set holdingBall=false or send 'releaseBall' yet.
+  // Keep the ball in-hand during the windup so both clients see the same thing.
+
   if (distToHoop < 3) {
     // DUNK
-    if (!localActionList[ANIM_IDX.dunk]) {
+    if (!localActions["0"]) {
       console.warn(`⚠️ [${myRole}] Dunk animation not loaded.`);
       return;
     }
-    playAnimation(localActionList, ANIM_IDX.dunk, true);
+    playAnimation(localActions, "0", true); // Dunk
 
-    const dunkDelay = localActionList[ANIM_IDX.dunk].getClip().duration * 0.8 * 1000;
+    const dunkDelay = localCurrentAction.getClip().duration * 0.8 * 1000;
 
     preparingDunk = true;
     const dunkDir = hoopPos.clone().sub(cameraHolder.position).normalize();
@@ -1457,6 +1318,7 @@ document.addEventListener('mousedown', (e) => {
     shootingJumpDuration = dunkDelay;
 
     setTimeout(() => {
+      // Actual release moment
       holdingBall = false;
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type:'releaseBall' }));
@@ -1466,6 +1328,7 @@ document.addEventListener('mousedown', (e) => {
       preparingDunk = false;
       shootingJumpStart = null;
 
+      // First in-air seed (server accepts from last shooter, then starts sim)
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
           type: 'ball',
@@ -1478,13 +1341,13 @@ document.addEventListener('mousedown', (e) => {
 
   } else {
     // JUMPSHOT
-    if (!localActionList[ANIM_IDX.shoot]) {
+    if (!localActions["6"]) {
       console.warn(`⚠️ [${myRole}] Shooting animation not loaded yet.`);
       return;
     }
-    playAnimation(localActionList, ANIM_IDX.shoot, true);
+    playAnimation(localActions, "6", true);
 
-    const shootDelay = localActionList[ANIM_IDX.shoot].getClip().duration * 0.65 * 1000;
+    const shootDelay = localCurrentAction.getClip().duration * 0.65 * 1000;
 
     preparingShot = true;
     const shotDir = dir.clone();
@@ -1494,6 +1357,7 @@ document.addEventListener('mousedown', (e) => {
     shootingJumpDuration = shootDelay;
 
     setTimeout(() => {
+      // Actual release moment
       holdingBall = false;
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type:'releaseBall' }));
@@ -1503,6 +1367,7 @@ document.addEventListener('mousedown', (e) => {
       preparingShot = false;
       shootingJumpStart = null;
 
+      // First in-air seed
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
           type: 'ball',
@@ -1533,10 +1398,6 @@ document.addEventListener('keyup', (e) => {
 
 // Animation Loop
 function animate() {
-  // ADD at top of animate()
-  const dt = Math.min(clock.getDelta(), 0.05); // cap big stutters
-  const frameScale = dt * 60;                  // 60 = old "per-frame" baseline
-
   requestAnimationFrame(animate);
   direction.set(0, 0, 0);
   if (!intermission && !animationLocked) {
@@ -1548,7 +1409,7 @@ function animate() {
 
   direction.normalize();
 
-  velocity.copy(direction).applyEuler(cameraHolder.rotation).multiplyScalar(0.1 * frameScale);
+  velocity.copy(direction).applyEuler(cameraHolder.rotation).multiplyScalar(0.1);
   cameraHolder.position.add(velocity);
   localPlayer.position.copy(cameraHolder.position);
   localPlayer.position.y -= 0.9;
@@ -1573,33 +1434,44 @@ function animate() {
   cameraHolder.position.y = 1.6 + jumpY;
   localPlayer.position.y  = 0.7 + jumpY;
 
+  // --- Role-aware animation selection ---
   if (!animationLocked) {
+    // I am offense if I currently possess the ball (server truth or local optimism)
     const iAmOffense = (possessionRole === myRole) || holdingBall;
     const moving = (moveForward || moveBackward || moveLeft || moveRight);
 
     if (!iAmOffense) {
       // DEFENSE GROUP
       if (fPressed) {
-        playAnimation(localActionList, ANIM_IDX.block);
+        // Block Shot (index 2)
+        playAnimation(localActions, "2");
         fPressed = false;
       } else if (moving) {
-        playAnimation(localActionList, ANIM_IDX.defense);
+        // Defense Active / shuffle (index 4)
+        playAnimation(localActions, "4");
       } else {
-        playAnimation(localActionList, ANIM_IDX.idle_def);
+        // Idle (shared, index 1)
+        playAnimation(localActions, "1");
       }
     } else {
-      // OFFENSE GROUP
+      // OFFENSE GROUP (keep your existing offense moves)
       if (qPressed) {
-        playAnimation(localActionList, ANIM_IDX.crossover);
+        // Crossover (you already mapped this to index 3)
+        playAnimation(localActions, "3");
         qPressed = false;
       } else if (holdingBall && moving) {
-        playAnimation(localActionList, ANIM_IDX.dribble);
+        // Dribble while moving (index 5 as you had)
+        if (!dribbling) {
+          dribbling = true;
+          dribbleStartTime = performance.now();
+        }
+        playAnimation(localActions, "5");
       } else if (moving) {
-        playAnimation(localActionList, ANIM_IDX.run); // <-- play idle when moving but not holding ball
-      } else if (holdingBall) {
-        playAnimation(localActionList, ANIM_IDX.idle); // idle with ball
+        // Running / your “right dribble” stand-in (index 7)
+        playAnimation(localActions, "7");
       } else {
-        playAnimation(localActionList, ANIM_IDX.idle); // idle without ball
+        // Idle (shared, index 1)
+        playAnimation(localActions, "1");
       }
     }
   }
@@ -1665,7 +1537,7 @@ function animate() {
           ballVelocity.z *= -0.5;
         }
 
-        ball.position.addScaledVector(ballVelocity, frameScale);
+        ball.position.add(ballVelocity);
 
         // Simple backboard bounce using the collider (already relative to BACKBOARD_Z)
         if (backboardCollider.containsPoint(ball.position)) {
@@ -1693,7 +1565,14 @@ function animate() {
 
 
       if (scored) {
-        holdingBall = false;
+        myScore++;
+        document.getElementById("myScore").textContent = myScore;
+
+        // Tell server (it will reset, swap offense/defense, and assign ball)
+        socket.send(JSON.stringify({ type: "score", score: myScore }));
+
+        // Pause & show scoreboard locally too
+        showIntermission();
       }
     }
   }
@@ -1718,11 +1597,12 @@ function animate() {
 
   remoteNameTag.lookAt(camera.position);
   localNameTag.lookAt(camera.position);
-  
+
   renderer.render(scene, camera);
 
-  if (localMixer) localMixer.update(dt);
-  if (remoteMixer) remoteMixer.update(dt);
+  const delta = clock.getDelta();
+  if (localMixer) localMixer.update(delta);
+  if (remoteMixer) remoteMixer.update(delta);
 }
 
 animate();
