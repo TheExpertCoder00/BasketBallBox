@@ -566,6 +566,22 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (data.type === 'animation') {
+      const room = ws._roomId ? rooms.get(ws._roomId) : null;
+      if (!room) return;
+      // Relay animation to all other players in the room
+      for (const p of room.players) {
+        if (p.ws !== ws && p.ws.readyState === WebSocket.OPEN) {
+          p.ws.send(JSON.stringify({
+            type: 'animation',
+            animation: data.animation,
+            lock: !!data.lock
+          }));
+        }
+      }
+      return;
+    }
+
     // --- Lobby ops ---
     if (data.type === 'listRooms') {
       ws.send(JSON.stringify({ type: 'rooms', rooms: summarizeRooms() }));
