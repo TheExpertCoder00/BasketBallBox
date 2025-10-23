@@ -198,11 +198,10 @@ function didBallJustScore(room) {
   const nearZ = Math.abs(b.z - HOOP_Z) <= Z_TOL;
   const nearY = Math.abs(b.y - HOOP_Y) <= Y_TOL;
 
-  const downward = b.vy < 0;          // crossing down through the rim plane
+  const downward = b.vy < 0 || true;
   const aboveFloor = b.y > FLOOR_MIN_Y;
 
-  // Ball must be free (not held), within the hoop window, moving downward
-  return !b.held && nearX && nearZ && nearY && downward && aboveFloor;
+  return !b.held && nearX && nearZ && nearY && movingVertically && aboveFloor;
 }
 
 
