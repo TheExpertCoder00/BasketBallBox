@@ -435,6 +435,12 @@ function joinRoom(ws, roomId, password = null) {
   ws._role = role;
 
   ws.send(JSON.stringify({ type: 'joinedRoom', roomId: room.id, role, toWin: room.toWin }));
+
+  broadcastRoom(room, {
+      type: 'roster',
+      players: room.players.map(p => ({ id: p.ws._id }))
+  });
+
   broadcastToLobby();
 }
 
@@ -496,6 +502,11 @@ function leaveCurrentRoom(ws) {
 // ----------------- WebSocket Handlers -----------------
 wss.on('connection', (ws) => {
   if (ws._socket?.setNoDelay) ws._socket.setNoDelay(true);
+
+  ws.send(JSON.stringify({
+      type: 'hello',
+      id: ws._id
+  }));
 
   // When a client joins a room and you push it into room.players:
   ws._id = ws._id || Math.random().toString(36).slice(2);
