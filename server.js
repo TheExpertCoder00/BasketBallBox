@@ -503,13 +503,14 @@ function leaveCurrentRoom(ws) {
 wss.on('connection', (ws) => {
   if (ws._socket?.setNoDelay) ws._socket.setNoDelay(true);
 
+  // create unique ID FIRST
+  ws._id = Math.random().toString(36).slice(2);
+
+  // THEN send hello message
   ws.send(JSON.stringify({
       type: 'hello',
       id: ws._id
   }));
-
-  // When a client joins a room and you push it into room.players:
-  ws._id = ws._id || Math.random().toString(36).slice(2);
 
   ws._role = null;
   ws._roomid = null;
